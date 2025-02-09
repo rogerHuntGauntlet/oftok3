@@ -1,0 +1,51 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isCommentOwner(commentData) {
+      return isSignedIn() && commentData.userId == request.auth.uid;
+    }
+
+    // Comments collection rules
+    match /comments/{commentId} {
+      // Allow reading comments by anyone
+      allow read: if true;
+      
+      // Allow creating comments if signed in and data is valid
+      allow create: if isSignedIn() 
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 1000
+        && request.resource.data.videoId is string
+        && request.resource.data.createdAt is timestamp;
+      
+      // Allow updating for specific fields
+      allow update: if isSignedIn() && (
+        // Allow editing text only by comment owner
+        (isCommentOwner(resource.data) && 
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'editedAt'])) ||
+        // Allow updating reactions by any signed-in user
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']) ||
+        // Allow updating likedBy by any signed-in user
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likedBy']) ||
+        // Allow updating replyCount for parent comments
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['replyCount'])
+      );
+      
+      // Allow deleting only by comment owner
+      allow delete: if isCommentOwner(resource.data);
+    }
+
+    // Projects collection rules (existing rules)
+    match /projects/{projectId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == resource.data.userId;
+    }
+  }
+} 
