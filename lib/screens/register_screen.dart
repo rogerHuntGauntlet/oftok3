@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/user_service.dart';
+import '../services/video/video_preload_service.dart';
+import '../services/video/media_kit_player_service.dart';
 import 'projects_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -31,25 +33,66 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => _isLoading = true);
 
     try {
+      print('Attempting to create user account...'); // Debug log
       // Create the user account
       final userCredential = await _auth.createUserWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
+      print('User account created, updating display name...'); // Debug log
       // Update the user's display name
       await userCredential.user?.updateDisplayName(_displayNameController.text.trim());
 
+      print('Display name updated, creating Firestore document...'); // Debug log
       // Create the user document in Firestore
       if (userCredential.user != null) {
         await _userService.createOrUpdateUser(userCredential.user!);
+        print('Firestore document created successfully'); // Debug log
+        
+        // Initialize video preloading service
+        final preloadService = VideoPreloadService(
+          factory: MediaKitPlayerFactory(),
+        );
+
+        // Navigate to projects screen after successful registration
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (context) => ProjectsScreen(
+                preloadService: preloadService,
+              ),
+            ),
+          );
+        }
       }
       
-      // Remove manual navigation - let the auth state listener handle it
     } catch (e) {
+      print('Registration error: $e'); // Debug log
       if (mounted) {
+        String errorMessage = 'Registration failed';
+        
+        if (e is FirebaseAuthException) {
+          switch (e.code) {
+            case 'email-already-in-use':
+              errorMessage = 'This email is already registered';
+              break;
+            case 'invalid-email':
+              errorMessage = 'Please enter a valid email address';
+              break;
+            case 'operation-not-allowed':
+              errorMessage = 'Email/password accounts are not enabled. Please contact support.';
+              break;
+            case 'weak-password':
+              errorMessage = 'Please choose a stronger password';
+              break;
+            default:
+              errorMessage = 'Registration error: ${e.message}';
+          }
+        }
+        
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.toString()}')),
+          SnackBar(content: Text(errorMessage)),
         );
       }
     } finally {

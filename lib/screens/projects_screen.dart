@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/project_service.dart';
+import '../services/video/video_preload_service.dart';
 import '../models/project.dart';
 import 'project_details_screen.dart';
 import 'login_screen.dart';
 
 class ProjectsScreen extends StatefulWidget {
-  const ProjectsScreen({super.key});
+  final VideoPreloadService? preloadService;
+
+  const ProjectsScreen({
+    super.key,
+    this.preloadService,
+  });
 
   @override
   State<ProjectsScreen> createState() => _ProjectsScreenState();
@@ -259,7 +265,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> with SingleTickerProvid
             subtitle: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(project.description),
+                Text(project.description ?? 'No description'),
                 const SizedBox(height: 4),
                 Text(
                   '${project.videoIds.length} videos',
@@ -275,7 +281,10 @@ class _ProjectsScreenState extends State<ProjectsScreen> with SingleTickerProvid
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => ProjectDetailsScreen(project: project),
+                  builder: (context) => ProjectDetailsScreen(
+                    project: project,
+                    preloadService: widget.preloadService,
+                  ),
                 ),
               );
             },

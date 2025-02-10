@@ -36,7 +36,8 @@ class Project {
 
   factory Project.fromJson(Map<String, dynamic> json) {
     try {
-      return Project(
+      print('Creating Project from JSON: $json'); // Debug print
+      final project = Project(
         id: json['id'] as String? ?? '',
         name: json['name'] as String? ?? 'Untitled Project',
         description: json['description'] as String? ?? '',
@@ -54,6 +55,8 @@ class Project {
             ? List<String>.from(json['collaboratorIds'])
             : [],
       );
+      print('Successfully created Project: ${project.id}'); // Debug print
+      return project;
     } catch (e) {
       print('Error creating Project from JSON: $e');
       print('Problematic JSON: $json');

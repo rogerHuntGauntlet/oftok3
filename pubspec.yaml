@@ -43,6 +43,9 @@ dependencies:
   cloud_functions: ^4.5.8
   firebase_app_check: ^0.2.1+8
 
+  # HTTP
+  http: ^1.1.2
+
   # Video handling
   video_player: ^2.8.1
   image_picker: ^1.0.5

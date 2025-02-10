@@ -1,124 +1,105 @@
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
-
-class AppUser {
-  final String id;
-  final String displayName;
-  final String email;
-  final String? photoUrl;
-  final bool isAuthenticated;
-  final DateTime createdAt;
-  final DateTime updatedAt;
-
-  AppUser({
-    required this.id,
-    required this.displayName,
-    required this.email,
-    this.photoUrl,
-    this.isAuthenticated = true,
-    DateTime? createdAt,
-    DateTime? updatedAt,
-  }) : 
-    this.createdAt = createdAt ?? DateTime.now(),
-    this.updatedAt = updatedAt ?? DateTime.now();
-
-  Map<String, dynamic> toJson() {
-    return {
-      'uid': id, // Use uid consistently
-      'displayName': displayName,
-      'email': email,
-      'photoUrl': photoUrl,
-      'isAuthenticated': isAuthenticated,
-      'createdAt': createdAt.toIso8601String(),
-      'updatedAt': updatedAt.toIso8601String(),
-    };
-  }
-
-  factory AppUser.fromJson(Map<String, dynamic> json) {
-    return AppUser(
-      id: json['uid'] as String, // Use uid consistently
-      displayName: json['displayName'] as String? ?? 'User',
-      email: json['email'] as String? ?? '',
-      photoUrl: json['photoUrl'] as String?,
-      isAuthenticated: json['isAuthenticated'] as bool? ?? true,
-      createdAt: json['createdAt'] != null 
-        ? DateTime.parse(json['createdAt'] as String)
-        : null,
-      updatedAt: json['updatedAt'] != null
-        ? DateTime.parse(json['updatedAt'] as String)
-        : null,
-    );
-  }
-
-  factory AppUser.fromFirebaseUser(User user) {
-    return AppUser(
-      id: user.uid,
-      displayName: user.displayName ?? 'User',
-      email: user.email ?? '',
-      photoUrl: user.photoURL,
-      isAuthenticated: true,
-    );
-  }
-}
+import 'package:http/http.dart' as http;
+import '../models/app_user.dart';
 
 class UserService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFunctions _functions = FirebaseFunctions.instance;
 
-  // Static list of fake users for testing
-  static final List<AppUser> _fakeUsers = [
-    AppUser(
-      id: 'user1',
-      displayName: 'John Doe',
-      email: 'john.doe@example.com',
-      photoUrl: 'https://ui-avatars.com/api/?name=John+Doe',
-    ),
-    AppUser(
-      id: 'user2',
-      displayName: 'Jane Smith',
-      email: 'jane.smith@example.com',
-      photoUrl: 'https://ui-avatars.com/api/?name=Jane+Smith',
-    ),
-    AppUser(
-      id: 'user3',
-      displayName: 'Bob Johnson',
-      email: 'bob.johnson@example.com',
-      photoUrl: 'https://ui-avatars.com/api/?name=Bob+Johnson',
-    ),
-    AppUser(
-      id: 'user4',
-      displayName: 'Alice Brown',
-      email: 'alice.brown@example.com',
-      photoUrl: 'https://ui-avatars.com/api/?name=Alice+Brown',
-    ),
-    AppUser(
-      id: 'user5',
-      displayName: 'Charlie Wilson',
-      email: 'charlie.wilson@example.com',
-      photoUrl: 'https://ui-avatars.com/api/?name=Charlie+Wilson',
-    ),
-  ];
+  // Get initial list of users (excluding current user and collaborators)
+  Future<List<AppUser>> getInitialUsers({String? searchQuery, List<String>? excludeIds}) async {
+    try {
+      print('Fetching users from Firebase Auth...'); // Debug print
+      
+      // Get the current user's ID to exclude them from the list
+      final currentUserId = _auth.currentUser?.uid;
+      
+      // Call the HTTP endpoint
+      final response = await http.get(Uri.parse(
+        'https://us-central1-ohftok-gauntlet.cloudfunctions.net/listAllUsers'
+      ));
+      
+      if (response.statusCode != 200) {
+        print('Error response: ${response.body}'); // Debug print
+        return [];
+      }
+      
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      if (!data.containsKey('users')) {
+        print('Invalid response format'); // Debug print
+        return [];
+      }
+      
+      final List<dynamic> usersData = data['users'] as List<dynamic>;
+      var users = usersData
+          .where((userData) {
+            final uid = userData['uid'] as String;
+            return uid != currentUserId && !(excludeIds?.contains(uid) ?? false);
+          })
+          .map((userData) => AppUser(
+                id: userData['uid'] as String,
+                displayName: userData['displayName'] as String? ?? 'User',
+                email: userData['email'] as String? ?? '',
+                photoUrl: userData['photoUrl'] as String?,
+                isAuthenticated: true,
+              ))
+          .toList();
 
-  // Get initial list of users (excluding current user)
-  Future<List<AppUser>> getInitialUsers() async {
-    print('Getting initial fake users'); // Debug print
-    final currentUserId = _auth.currentUser?.uid;
-    return _fakeUsers.where((user) => user.id != currentUserId).toList();
+      // Filter users if search query is provided
+      if (searchQuery != null && searchQuery.isNotEmpty) {
+        final query = searchQuery.toLowerCase();
+        users = users.where((user) =>
+          user.displayName.toLowerCase().contains(query) ||
+          user.email.toLowerCase().contains(query)
+        ).toList();
+      }
+
+      print('Found ${users.length} users'); // Debug print
+      return users;
+    } catch (e) {
+      print('Error fetching users: $e'); // Debug print
+      return [];
+    }
   }
 
-  // Search authenticated users
+  // Search users
   Future<List<AppUser>> searchUsers(String query) async {
-    print('Searching fake users with query: $query'); // Debug print
-    final currentUserId = _auth.currentUser?.uid;
-    final lowercaseQuery = query.toLowerCase();
-    
-    return _fakeUsers.where((user) {
-      if (user.id == currentUserId) return false;
-      return user.displayName.toLowerCase().contains(lowercaseQuery) ||
-             user.email.toLowerCase().contains(lowercaseQuery);
-    }).toList();
+    try {
+      final currentUser = _auth.currentUser;
+      if (currentUser == null) {
+        throw FirebaseException(
+          plugin: 'user_service',
+          message: 'Must be authenticated to search users',
+        );
+      }
+
+      // Ensure we have a valid ID token
+      await currentUser.getIdToken();
+
+      print('Searching users with query: $query'); // Debug print
+      final HttpsCallable callable = _functions.httpsCallable('listUsers');
+      final result = await callable.call<Map<String, dynamic>>({
+        'query': query,
+      });
+      
+      final List<dynamic> usersData = result.data['users'] as List<dynamic>;
+      final users = usersData
+          .map((userData) => AppUser.fromJson(userData as Map<String, dynamic>))
+          .toList();
+
+      print('Found ${users.length} users matching query'); // Debug print
+      return users;
+    } on FirebaseException catch (e) {
+      print('Firebase error searching users: ${e.message}'); // Debug print
+      rethrow;
+    } catch (e) {
+      print('Error searching users: $e'); // Debug print
+      rethrow;
+    }
   }
 
   // Create or update user in Firestore
@@ -191,20 +172,42 @@ class UserService {
 
   // Get multiple users by IDs
   Future<List<AppUser>> getUsers(List<String> userIds) async {
+    print('Getting users for IDs: $userIds'); // Debug print
     if (userIds.isEmpty) return [];
 
     try {
-      final snapshots = await Future.wait(
-        userIds.map((id) => _firestore.collection('users').doc(id).get()),
-      );
-
-      return snapshots
-          .where((snap) => snap.exists)
-          .map((snap) => AppUser.fromJson(snap.data()!))
+      final response = await http.get(Uri.parse(
+        'https://us-central1-ohftok-gauntlet.cloudfunctions.net/listAllUsers'
+      ));
+      
+      if (response.statusCode != 200) {
+        print('Error response: ${response.body}'); // Debug print
+        return [];
+      }
+      
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      if (!data.containsKey('users')) {
+        print('Invalid response format'); // Debug print
+        return [];
+      }
+      
+      final List<dynamic> usersData = data['users'] as List<dynamic>;
+      final users = usersData
+          .where((userData) => userIds.contains(userData['uid'] as String))
+          .map((userData) => AppUser(
+                id: userData['uid'] as String,
+                displayName: userData['displayName'] as String? ?? 'User',
+                email: userData['email'] as String? ?? '',
+                photoUrl: userData['photoUrl'] as String?,
+                isAuthenticated: true,
+              ))
           .toList();
+
+      print('Found ${users.length} users out of ${userIds.length} requested'); // Debug print
+      return users;
     } catch (e) {
-      print('Error getting multiple users: $e'); // Debug print
-      rethrow;
+      print('Error fetching users: $e'); // Debug print
+      return [];
     }
   }
 } 

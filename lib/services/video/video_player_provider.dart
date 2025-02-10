@@ -28,7 +28,7 @@ class VideoPlayerProvider extends ChangeNotifier {
     : 0.0;
 
   /// Initializes a new video for playback
-  Future<void> initializeVideo(String videoUrl) async {
+  Future<void> initializeVideo(String videoUrl, {VideoPlayerService? preloadedPlayer}) async {
     if (_currentVideoUrl == videoUrl) return;
 
     _setLoading(true);
@@ -38,10 +38,15 @@ class VideoPlayerProvider extends ChangeNotifier {
       // Clean up previous player
       await _cleanupCurrentPlayer();
       
-      // Create and initialize new player
-      _player = factory.createPlayer();
-      await _player!.initialize(videoUrl);
-      _currentVideoUrl = videoUrl;
+      if (preloadedPlayer != null) {
+        _player = preloadedPlayer;
+        _currentVideoUrl = videoUrl;
+      } else {
+        // Create and initialize new player
+        _player = factory.createPlayer();
+        await _player!.initialize(videoUrl);
+        _currentVideoUrl = videoUrl;
+      }
       
       // Setup streams
       _setupStreams();

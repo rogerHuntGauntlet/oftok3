@@ -109,7 +109,9 @@ class ProjectService {
         .snapshots()
         .map((snapshot) {
           if (!snapshot.exists) return null;
-          return Project.fromJson(snapshot.data()!);
+          final data = snapshot.data()!;
+          data['id'] = snapshot.id; // Ensure ID is included
+          return Project.fromJson(data);
         });
   }
 

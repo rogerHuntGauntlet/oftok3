@@ -2,18 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../services/video/video_player_provider.dart';
+import '../services/video/video_player_service.dart';
 import '../services/video/media_kit_player_service.dart';
 
 class VideoPlayerWidget extends StatefulWidget {
   final String videoUrl;
   final bool autoPlay;
   final bool showControls;
+  final VideoPlayerService? preloadedPlayer;
 
   const VideoPlayerWidget({
     super.key,
     required this.videoUrl,
     this.autoPlay = true,
     this.showControls = true,
+    this.preloadedPlayer,
   });
 
   @override
@@ -21,23 +24,65 @@ class VideoPlayerWidget extends StatefulWidget {
 }
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
+  bool _isInitializing = true;
+  bool _hasError = false;
+  String? _errorMessage;
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        final provider = context.read<VideoPlayerProvider>();
-        provider.initializeVideo(widget.videoUrl);
-      }
+    _initializeVideo();
+  }
+
+  Future<void> _initializeVideo() async {
+    if (!mounted) return;
+
+    setState(() {
+      _isInitializing = true;
+      _hasError = false;
+      _errorMessage = null;
     });
+
+    try {
+      final provider = Provider.of<VideoPlayerProvider>(context, listen: false);
+      
+      // Initialize the video
+      await provider.initializeVideo(
+        widget.videoUrl,
+        preloadedPlayer: widget.preloadedPlayer,
+      );
+
+      // Handle autoplay
+      if (widget.autoPlay) {
+        await provider.play();
+      } else {
+        await provider.pause();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _hasError = true;
+          _errorMessage = e.toString();
+        });
+      }
+      print('Video initialization error: $e'); // Debug log
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isInitializing = false;
+        });
+      }
+    }
   }
 
   @override
   void didUpdateWidget(VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.videoUrl != oldWidget.videoUrl && mounted) {
-      final provider = context.read<VideoPlayerProvider>();
-      provider.initializeVideo(widget.videoUrl);
+    
+    // Re-initialize if URL changes or autoplay state changes
+    if (widget.videoUrl != oldWidget.videoUrl || 
+        widget.autoPlay != oldWidget.autoPlay) {
+      _initializeVideo();
     }
   }
 
@@ -45,11 +90,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Widget build(BuildContext context) {
     return Consumer<VideoPlayerProvider>(
       builder: (context, provider, child) {
-        if (provider.isLoading) {
-          return const Center(child: CircularProgressIndicator());
+        if (_isInitializing || provider.isLoading) {
+          return const Center(
+            child: CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+          );
         }
 
-        if (provider.error != null) {
+        if (_hasError || provider.error != null) {
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -57,13 +106,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 const Icon(Icons.error_outline, color: Colors.red, size: 48),
                 const SizedBox(height: 16),
                 Text(
-                  provider.error!,
+                  _errorMessage ?? provider.error ?? 'Error loading video',
                   style: const TextStyle(color: Colors.red),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                  onPressed: () => provider.initializeVideo(widget.videoUrl),
+                  onPressed: _initializeVideo,
                   child: const Text('Retry'),
                 ),
               ],
@@ -115,16 +164,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
               // Play/Pause overlay
               if (widget.showControls && !provider.isPlaying)
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.play_arrow,
-                    color: Colors.white,
-                    size: 48,
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.5),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow,
+                      color: Colors.white,
+                      size: 48,
+                    ),
                   ),
                 ),
 

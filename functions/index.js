@@ -27,65 +27,49 @@ admin.initializeApp({
 // });
 
 exports.listUsers = functions.https.onCall(async (data, context) => {
-  // Check if user is authenticated
-  if (!context.auth) {
-    console.error('Unauthenticated request to listUsers');
-    throw new functions.https.HttpsError(
-      'unauthenticated',
-      'Must be authenticated to list users'
-    );
-  }
-
   try {
-    console.log('listUsers called by user:', context.auth.uid);
-    console.log('Search query:', data.query);
-    
-    const { query = '' } = data;
     console.log('Fetching users from Firebase Auth...');
     const listUsersResult = await admin.auth().listUsers();
     console.log('Found total users:', listUsersResult.users.length);
     
-    // Filter and map users
+    // Map users to simpler format
     const users = listUsersResult.users
-      .filter(user => {
-        const searchLower = query.toLowerCase();
-        const displayName = (user.displayName || '').toLowerCase();
-        const email = (user.email || '').toLowerCase();
-        
-        // Don't include the requesting user
-        if (user.uid === context.auth?.uid) {
-          console.log('Excluding requesting user:', user.uid);
-          return false;
-        }
-        
-        // If no query, include all users
-        if (!query) return true;
-        
-        // Search by display name or email
-        const matches = displayName.includes(searchLower) || 
-                       email.includes(searchLower);
-        if (matches) {
-          console.log('User matches search:', user.uid);
-        }
-        return matches;
-      })
       .map(user => ({
-        id: user.uid,
+        uid: user.uid,
         displayName: user.displayName || 'User',
         email: user.email || '',
-        photoUrl: user.photoURL,
-        isAuthenticated: true
+        photoUrl: user.photoURL
       }))
       .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
-    console.log('Returning filtered users:', users.length);
+    console.log('Returning users:', users.length);
     return { users };
   } catch (error) {
     console.error('Error in listUsers:', error);
-    console.error('Error stack:', error.stack);
     throw new functions.https.HttpsError(
       'internal',
       'Error listing users: ' + error.message
     );
+  }
+});
+
+exports.listAllUsers = functions.https.onRequest(async (req, res) => {
+  try {
+    console.log('Fetching all users from Firebase Auth...');
+    const listUsersResult = await admin.auth().listUsers();
+    
+    // Map users to simpler format
+    const users = listUsersResult.users.map(user => ({
+      uid: user.uid,
+      displayName: user.displayName || 'User',
+      email: user.email || '',
+      photoUrl: user.photoURL
+    }));
+
+    console.log('Found users:', users.length);
+    res.json({ users });
+  } catch (error) {
+    console.error('Error listing users:', error);
+    res.status(500).json({ error: 'Failed to list users' });
   }
 });

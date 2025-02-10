@@ -1,20 +1,24 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import '../models/app_user.dart';
 import '../models/project.dart';
 import '../models/video.dart';
 import '../services/video_service.dart';
 import '../services/project_service.dart';
 import '../services/user_service.dart';
+import '../services/video/video_preload_service.dart';
 import '../widgets/video_thumbnail.dart';
 import 'video_feed_screen.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final Project project;
+  final VideoPreloadService? preloadService;
 
   const ProjectDetailsScreen({
     super.key,
     required this.project,
+    this.preloadService,
   });
 
   @override
@@ -113,6 +117,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
             videoUrls: videos.map((v) => v.url).toList(),
             videoIds: videos.map((v) => v.id).toList(),
             projectName: widget.project.name,
+            preloadService: widget.preloadService,
           ),
         ),
       );
@@ -193,6 +198,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   }
 
   void _showInviteCollaboratorsOverlay() {
+    String searchQuery = '';
     print("Showing invite overlay"); // Debug print
     showModalBottomSheet(
       context: context,
@@ -202,108 +208,281 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
         initialChildSize: 0.9,
         minChildSize: 0.5,
         maxChildSize: 0.9,
-        builder: (_, controller) => Container(
-          decoration: BoxDecoration(
-            color: Theme.of(context).scaffoldBackgroundColor,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          child: Column(
-            children: [
-              // Header
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    const Text(
-                      'Invite Collaborators',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
+        builder: (_, controller) => DefaultTabController(
+          length: 2,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              children: [
+                // Header
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      const Text(
+                        'Project Members',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                // Tab Bar
+                const TabBar(
+                  tabs: [
+                    Tab(text: 'Invite'),
+                    Tab(text: 'Manage'),
                   ],
                 ),
-              ),
-              // User list
-              Expanded(
-                child: FutureBuilder<List<AppUser>>(
-                  future: _userService.getInitialUsers(),
-                  builder: (context, snapshot) {
-                    print("FutureBuilder state: ${snapshot.connectionState}"); // Debug print
-                    print("FutureBuilder error: ${snapshot.error}"); // Debug print
-                    print("FutureBuilder data: ${snapshot.data?.length} users"); // Debug print
+                // Tab Views
+                Expanded(
+                  child: TabBarView(
+                    children: [
+                      // Invite Tab
+                      StatefulBuilder(
+                        builder: (context, setState) => Column(
+                          children: [
+                            // Search Bar
+                            Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: TextField(
+                                decoration: InputDecoration(
+                                  hintText: 'Search users...',
+                                  prefixIcon: const Icon(Icons.search),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
+                                ),
+                                onChanged: (query) {
+                                  setState(() => searchQuery = query);
+                                },
+                              ),
+                            ),
+                            // User List
+                            Expanded(
+                              child: StreamBuilder<Project?>(
+                                stream: _projectStream,
+                                builder: (context, projectSnapshot) {
+                                  return FutureBuilder<List<AppUser>>(
+                                    future: _userService.getInitialUsers(
+                                      searchQuery: searchQuery,
+                                      excludeIds: projectSnapshot.data?.collaboratorIds,
+                                    ),
+                                    builder: (context, snapshot) {
+                                      if (snapshot.hasError) {
+                                        return Center(
+                                          child: Text('Error: ${snapshot.error}'),
+                                        );
+                                      }
 
-                    if (snapshot.hasError) {
-                      return Center(
-                        child: Text('Error: ${snapshot.error}'),
-                      );
-                    }
+                                      if (!snapshot.hasData) {
+                                        return const Center(
+                                          child: CircularProgressIndicator(),
+                                        );
+                                      }
 
-                    if (!snapshot.hasData) {
-                      return const Center(
-                        child: CircularProgressIndicator(),
-                      );
-                    }
+                                      final users = snapshot.data!;
+                                      
+                                      // Add debug prints and use widget.project directly
+                                      print('Direct Project Data: ${widget.project}');
+                                      print('Direct Project CollaboratorIds: ${widget.project.collaboratorIds}');
+                                      print('Initial Users Count: ${users.length}');
+                                      
+                                      // Filter out collaborator IDs after initial load using widget.project
+                                      final filteredUsers = users.where((user) {
+                                        final collaboratorIds = widget.project.collaboratorIds;
+                                        print('Checking user ${user.id} against collaboratorIds: $collaboratorIds');
+                                        return !collaboratorIds.contains(user.id);
+                                      }).toList();
 
-                    final users = snapshot.data!;
-                    return ListView.builder(
-                      controller: controller,
-                      itemCount: users.length,
-                      itemBuilder: (context, index) {
-                        final user = users[index];
-                        return ListTile(
-                          leading: CircleAvatar(
-                            backgroundImage: user.photoUrl != null
-                                ? NetworkImage(user.photoUrl!)
-                                : null,
-                            child: user.photoUrl == null
-                                ? Text(user.displayName[0].toUpperCase())
-                                : null,
-                          ),
-                          title: Text(user.displayName),
-                          subtitle: Text(user.email),
-                          trailing: TextButton.icon(
-                            icon: const Icon(Icons.add),
-                            label: const Text('Add'),
-                            onPressed: () async {
-                              try {
-                                await _projectService.addCollaborator(
-                                  widget.project.id,
-                                  user.id,
+                                      print('Filtered Users Count: ${filteredUsers.length}');
+                                      
+                                      if (filteredUsers.isEmpty) {
+                                        return const Center(
+                                          child: Text('No users found'),
+                                        );
+                                      }
+
+                                      return ListView.builder(
+                                        controller: controller,
+                                        itemCount: filteredUsers.length,
+                                        itemBuilder: (context, index) {
+                                          final user = filteredUsers[index];
+                                          return ListTile(
+                                            leading: CircleAvatar(
+                                              backgroundColor: Theme.of(context).colorScheme.primary,
+                                              child: Text(
+                                                user.displayName[0].toUpperCase(),
+                                                style: TextStyle(
+                                                  color: Theme.of(context).colorScheme.onPrimary,
+                                                ),
+                                              ),
+                                            ),
+                                            title: Text(user.displayName),
+                                            subtitle: Text(user.email),
+                                            trailing: TextButton.icon(
+                                              icon: const Icon(Icons.add),
+                                              label: const Text('Add'),
+                                              onPressed: () async {
+                                                try {
+                                                  final userId = user.id;
+                                                  await _projectService.addCollaborator(
+                                                    widget.project.id,
+                                                    userId,
+                                                  );
+                                                  if (mounted) {
+                                                    // Update local state immediately
+                                                    setState(() {
+                                                      widget.project.collaboratorIds.add(userId);
+                                                    });
+                                                    ScaffoldMessenger.of(context).showSnackBar(
+                                                      SnackBar(
+                                                        content: Text(
+                                                          'Added ${user.displayName} to project',
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }
+                                                } catch (e) {
+                                                  if (mounted) {
+                                                    ScaffoldMessenger.of(context).showSnackBar(
+                                                      SnackBar(
+                                                        content: Text('Error: ${e.toString()}'),
+                                                        backgroundColor: Colors.red,
+                                                      ),
+                                                    );
+                                                  }
+                                                }
+                                              },
+                                            ),
+                                          );
+                                        },
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      // Manage Tab
+                      StreamBuilder<Project?>(
+                        stream: _projectStream,
+                        builder: (context, projectSnapshot) {
+                          print('Manage tab - Project data direct: ${widget.project}');
+                          print('Manage tab - Collaborator IDs direct: ${widget.project.collaboratorIds}');
+
+                          final collaboratorIds = widget.project.collaboratorIds;
+                          print('Manage tab - Using Collaborator IDs: $collaboratorIds');
+
+                          if (collaboratorIds.isEmpty) {
+                            return const Center(
+                              child: Text('No collaborators yet'),
+                            );
+                          }
+
+                          return FutureBuilder<List<AppUser>>(
+                            future: _userService.getUsers(collaboratorIds),
+                            builder: (context, snapshot) {
+                              print('Manage tab - User snapshot state: ${snapshot.connectionState}');
+                              print('Manage tab - User snapshot error: ${snapshot.error}');
+                              print('Manage tab - User snapshot data length: ${snapshot.data?.length}');
+
+                              if (snapshot.hasError) {
+                                return Center(
+                                  child: Text('Error: ${snapshot.error}'),
                                 );
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        'Added ${user.displayName} to project',
+                              }
+
+                              if (!snapshot.hasData) {
+                                return const Center(
+                                  child: CircularProgressIndicator(),
+                                );
+                              }
+
+                              final collaborators = snapshot.data!;
+                              return ListView.builder(
+                                controller: controller,
+                                itemCount: collaborators.length,
+                                itemBuilder: (context, index) {
+                                  final user = collaborators[index];
+                                  return ListTile(
+                                    leading: CircleAvatar(
+                                      backgroundColor: Theme.of(context).colorScheme.primary,
+                                      child: Text(
+                                        user.displayName[0].toUpperCase(),
+                                        style: TextStyle(
+                                          color: Theme.of(context).colorScheme.onPrimary,
+                                        ),
                                       ),
                                     ),
-                                  );
-                                }
-                              } catch (e) {
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text('Error: ${e.toString()}'),
-                                      backgroundColor: Colors.red,
+                                    title: Text(user.displayName),
+                                    subtitle: Text(user.email),
+                                    trailing: TextButton.icon(
+                                      icon: const Icon(Icons.remove),
+                                      label: const Text('Remove'),
+                                      style: TextButton.styleFrom(
+                                        foregroundColor: Colors.red,
+                                      ),
+                                      onPressed: () async {
+                                        try {
+                                          final userId = user.id;
+                                          await _projectService.removeCollaborator(
+                                            widget.project.id,
+                                            userId,
+                                          );
+                                          if (mounted) {
+                                            // Update local state immediately
+                                            setState(() {
+                                              widget.project.collaboratorIds.remove(userId);
+                                            });
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  'Removed ${user.displayName} from project',
+                                                ),
+                                              ),
+                                            );
+                                          }
+                                        } catch (e) {
+                                          if (mounted) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text('Error: ${e.toString()}'),
+                                                backgroundColor: Colors.red,
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      },
                                     ),
                                   );
-                                }
-                              }
+                                },
+                              );
                             },
-                          ),
-                        );
-                      },
-                    );
-                  },
+                          );
+                        },
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -658,6 +837,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                       videoUrls: availableVideos.map((v) => v.url).toList(),
                       videoIds: availableVideos.map((v) => v.id).toList(),
                       projectName: 'Available Videos',
+                      preloadService: widget.preloadService,
                     ),
                   ),
                 );

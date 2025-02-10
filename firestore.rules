@@ -11,6 +11,13 @@ service cloud.firestore {
       return isSignedIn() && commentData.userId == request.auth.uid;
     }
 
+    function isProjectOwnerOrCollaborator(projectData) {
+      return isSignedIn() && (
+        request.auth.uid == projectData.userId || 
+        projectData.collaboratorIds.hasAny([request.auth.uid])
+      );
+    }
+
     // Comments collection rules
     match /comments/{commentId} {
       // Allow reading comments by anyone
@@ -42,10 +49,18 @@ service cloud.firestore {
       allow delete: if isCommentOwner(resource.data);
     }
 
-    // Projects collection rules (existing rules)
+    // Projects collection rules
     match /projects/{projectId} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && request.auth.uid == resource.data.userId;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        // Allow project owner to do any updates
+        request.auth.uid == resource.data.userId ||
+        // Allow collaborators to update specific fields
+        (resource.data.collaboratorIds.hasAny([request.auth.uid]) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasAny(['videoIds', 'collaboratorIds']))
+      );
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.userId;
     }
   }
 } 
