@@ -164,4 +164,36 @@ class ProjectService {
             .map((doc) => Project.fromJson(doc.data()))
             .toList());
   }
+
+  // Get all public projects
+  Stream<List<Project>> getPublicProjects() {
+    print('Getting public projects'); // Debug print
+    return _firestore
+        .collection('projects')
+        .where('isPublic', isEqualTo: true)
+        .snapshots()
+        .map((snapshot) {
+          try {
+            final projects = snapshot.docs.map((doc) {
+              try {
+                final data = doc.data();
+                data['id'] = doc.id;
+                return Project.fromJson(data);
+              } catch (e) {
+                print('Error parsing project document ${doc.id}: $e');
+                return null;
+              }
+            })
+            .where((project) => project != null)
+            .cast<Project>()
+            .toList();
+            
+            print('Found ${projects.length} public projects'); // Debug print
+            return projects;
+          } catch (e) {
+            print('Error processing public projects snapshot: $e');
+            rethrow;
+          }
+        });
+  }
 } 

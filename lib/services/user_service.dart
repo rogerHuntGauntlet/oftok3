@@ -67,48 +67,58 @@ class UserService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFunctions _functions = FirebaseFunctions.instance;
 
+  // Static list of fake users for testing
+  static final List<AppUser> _fakeUsers = [
+    AppUser(
+      id: 'user1',
+      displayName: 'John Doe',
+      email: 'john.doe@example.com',
+      photoUrl: 'https://ui-avatars.com/api/?name=John+Doe',
+    ),
+    AppUser(
+      id: 'user2',
+      displayName: 'Jane Smith',
+      email: 'jane.smith@example.com',
+      photoUrl: 'https://ui-avatars.com/api/?name=Jane+Smith',
+    ),
+    AppUser(
+      id: 'user3',
+      displayName: 'Bob Johnson',
+      email: 'bob.johnson@example.com',
+      photoUrl: 'https://ui-avatars.com/api/?name=Bob+Johnson',
+    ),
+    AppUser(
+      id: 'user4',
+      displayName: 'Alice Brown',
+      email: 'alice.brown@example.com',
+      photoUrl: 'https://ui-avatars.com/api/?name=Alice+Brown',
+    ),
+    AppUser(
+      id: 'user5',
+      displayName: 'Charlie Wilson',
+      email: 'charlie.wilson@example.com',
+      photoUrl: 'https://ui-avatars.com/api/?name=Charlie+Wilson',
+    ),
+  ];
+
   // Get initial list of users (excluding current user)
   Future<List<AppUser>> getInitialUsers() async {
-    try {
-      print('Fetching initial users...'); // Debug print
-      final result = await _functions.httpsCallable('listUsers').call();
-      print('Initial users result: ${result.data}'); // Debug print
-      final List<dynamic> usersData = (result.data['users'] as List);
-      return usersData.map((userData) => AppUser.fromJson(userData)).toList();
-    } catch (e) {
-      print('Error fetching initial users: $e');
-      return [];
-    }
+    print('Getting initial fake users'); // Debug print
+    final currentUserId = _auth.currentUser?.uid;
+    return _fakeUsers.where((user) => user.id != currentUserId).toList();
   }
 
   // Search authenticated users
   Future<List<AppUser>> searchUsers(String query) async {
-    try {
-      print('Searching users with query: $query'); // Debug print
-      final result = await _functions
-          .httpsCallable('listUsers')
-          .call({'query': query});
-      print('Search result data: ${result.data}'); // Debug print
-      final List<dynamic> usersData = (result.data['users'] as List);
-      final users = usersData.map((userData) {
-        try {
-          return AppUser.fromJson(userData);
-        } catch (e) {
-          print('Error parsing user data: $e'); // Debug print
-          print('Problematic user data: $userData'); // Debug print
-          return null;
-        }
-      })
-      .where((user) => user != null)
-      .cast<AppUser>()
-      .toList();
-      
-      print('Found ${users.length} users'); // Debug print
-      return users;
-    } catch (e) {
-      print('Error searching users: $e');
-      rethrow; // Rethrow to show error in UI
-    }
+    print('Searching fake users with query: $query'); // Debug print
+    final currentUserId = _auth.currentUser?.uid;
+    final lowercaseQuery = query.toLowerCase();
+    
+    return _fakeUsers.where((user) {
+      if (user.id == currentUserId) return false;
+      return user.displayName.toLowerCase().contains(lowercaseQuery) ||
+             user.email.toLowerCase().contains(lowercaseQuery);
+    }).toList();
   }
 
   // Create or update user in Firestore

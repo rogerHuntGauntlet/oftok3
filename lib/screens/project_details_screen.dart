@@ -193,261 +193,117 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   }
 
   void _showInviteCollaboratorsOverlay() {
-    String searchQuery = '';
-    bool isInitialLoad = true;
-    
+    print("Showing invite overlay"); // Debug print
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setModalState) => DraggableScrollableSheet(
-          initialChildSize: 0.9,
-          minChildSize: 0.5,
-          maxChildSize: 0.9,
-          builder: (_, controller) => Container(
-            decoration: BoxDecoration(
-              color: Theme.of(context).scaffoldBackgroundColor,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            ),
-            child: Column(
-              children: [
-                // Drag handle
-                Container(
-                  height: 4,
-                  width: 40,
-                  margin: const EdgeInsets.symmetric(vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                // Header
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    children: [
-                      const Text(
-                        'Invite Collaborators',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                    ],
-                  ),
-                ),
-                // Search bar
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'Search by name or email',
-                      prefixIcon: const Icon(Icons.search),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.9,
+        minChildSize: 0.5,
+        maxChildSize: 0.9,
+        builder: (_, controller) => Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              // Header
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    const Text(
+                      'Invite Collaborators',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                    onChanged: (value) {
-                      setModalState(() {
-                        searchQuery = value;
-                        isInitialLoad = false;
-                      });
-                    },
-                  ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                // Search results
-                Expanded(
-                  child: StreamBuilder<Project?>(
-                    stream: _projectStream,
-                    builder: (context, projectSnapshot) {
-                      if (!projectSnapshot.hasData) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
+              ),
+              // User list
+              Expanded(
+                child: FutureBuilder<List<AppUser>>(
+                  future: _userService.getInitialUsers(),
+                  builder: (context, snapshot) {
+                    print("FutureBuilder state: ${snapshot.connectionState}"); // Debug print
+                    print("FutureBuilder error: ${snapshot.error}"); // Debug print
+                    print("FutureBuilder data: ${snapshot.data?.length} users"); // Debug print
 
-                      final project = projectSnapshot.data!;
-
-                      return FutureBuilder<List<AppUser>>(
-                        future: isInitialLoad 
-                          ? _userService.getInitialUsers()
-                          : _userService.searchUsers(searchQuery),
-                        builder: (context, snapshot) {
-                          if (snapshot.hasError) {
-                            print('Error in user search: ${snapshot.error}'); // Debug print
-                            print('Error stack trace: ${snapshot.stackTrace}'); // Debug print
-                            return Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    'Error loading users: ${snapshot.error}',
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(color: Colors.red),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  ElevatedButton.icon(
-                                    onPressed: () => setModalState(() {
-                                      isInitialLoad = true;
-                                    }),
-                                    icon: const Icon(Icons.refresh),
-                                    label: const Text('Retry'),
-                                  ),
-                                ],
-                              ),
-                            );
-                          }
-
-                          if (!snapshot.hasData) {
-                            return const Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  CircularProgressIndicator(),
-                                  SizedBox(height: 16),
-                                  Text('Loading users...'),
-                                ],
-                              ),
-                            );
-                          }
-
-                          final users = snapshot.data!;
-                          if (users.isEmpty) {
-                            if (isInitialLoad) {
-                              return const Center(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.group_outlined, size: 48, color: Colors.grey),
-                                    SizedBox(height: 16),
-                                    Text(
-                                      'No other users found',
-                                      style: TextStyle(color: Colors.grey),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }
-                            return Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.search_off, size: 48, color: Colors.grey),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    'No users found for "$searchQuery"',
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
-                              ),
-                            );
-                          }
-
-                          return ListView.builder(
-                            controller: controller,
-                            itemCount: users.length,
-                            itemBuilder: (context, index) {
-                              final user = users[index];
-                              final isCollaborator = project.collaboratorIds.contains(user.id);
-                              final isOwner = project.userId == user.id;
-
-                              if (isOwner) return const SizedBox.shrink();
-
-                              return ListTile(
-                                leading: CircleAvatar(
-                                  backgroundImage: user.photoUrl != null
-                                      ? NetworkImage(user.photoUrl!)
-                                      : null,
-                                  child: user.photoUrl == null
-                                      ? Text(user.displayName[0].toUpperCase())
-                                      : null,
-                                ),
-                                title: Text(user.displayName),
-                                subtitle: Text(user.email),
-                                trailing: isCollaborator
-                                    ? TextButton.icon(
-                                        icon: const Icon(Icons.remove),
-                                        label: const Text('Remove'),
-                                        style: TextButton.styleFrom(
-                                          foregroundColor: Colors.red,
-                                        ),
-                                        onPressed: () async {
-                                          try {
-                                            await _projectService.removeCollaborator(
-                                              project.id,
-                                              user.id,
-                                            );
-                                            setModalState(() {}); // Refresh the list
-                                            if (mounted) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                    'Removed ${user.displayName} from project',
-                                                  ),
-                                                ),
-                                              );
-                                            }
-                                          } catch (e) {
-                                            if (mounted) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                SnackBar(
-                                                  content: Text('Error: ${e.toString()}'),
-                                                  backgroundColor: Colors.red,
-                                                ),
-                                              );
-                                            }
-                                          }
-                                        },
-                                      )
-                                    : TextButton.icon(
-                                        icon: const Icon(Icons.add),
-                                        label: const Text('Add'),
-                                        onPressed: () async {
-                                          try {
-                                            await _projectService.addCollaborator(
-                                              project.id,
-                                              user.id,
-                                            );
-                                            setModalState(() {}); // Refresh the list
-                                            if (mounted) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                    'Added ${user.displayName} to project',
-                                                  ),
-                                                ),
-                                              );
-                                            }
-                                          } catch (e) {
-                                            if (mounted) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                SnackBar(
-                                                  content: Text('Error: ${e.toString()}'),
-                                                  backgroundColor: Colors.red,
-                                                ),
-                                              );
-                                            }
-                                          }
-                                        },
-                                      ),
-                              );
-                            },
-                          );
-                        },
+                    if (snapshot.hasError) {
+                      return Center(
+                        child: Text('Error: ${snapshot.error}'),
                       );
-                    },
-                  ),
+                    }
+
+                    if (!snapshot.hasData) {
+                      return const Center(
+                        child: CircularProgressIndicator(),
+                      );
+                    }
+
+                    final users = snapshot.data!;
+                    return ListView.builder(
+                      controller: controller,
+                      itemCount: users.length,
+                      itemBuilder: (context, index) {
+                        final user = users[index];
+                        return ListTile(
+                          leading: CircleAvatar(
+                            backgroundImage: user.photoUrl != null
+                                ? NetworkImage(user.photoUrl!)
+                                : null,
+                            child: user.photoUrl == null
+                                ? Text(user.displayName[0].toUpperCase())
+                                : null,
+                          ),
+                          title: Text(user.displayName),
+                          subtitle: Text(user.email),
+                          trailing: TextButton.icon(
+                            icon: const Icon(Icons.add),
+                            label: const Text('Add'),
+                            onPressed: () async {
+                              try {
+                                await _projectService.addCollaborator(
+                                  widget.project.id,
+                                  user.id,
+                                );
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Added ${user.displayName} to project',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Error: ${e.toString()}'),
+                                      backgroundColor: Colors.red,
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                          ),
+                        );
+                      },
+                    );
+                  },
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -460,6 +316,16 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       appBar: AppBar(
         title: Text(widget.project.name),
         actions: [
+          // Invite button
+          IconButton(
+            icon: const Icon(Icons.person_add),
+            onPressed: () {
+              print("Opening invite collaborators dialog"); // Debug print
+              _showInviteCollaboratorsOverlay();
+            },
+            tooltip: 'Invite Collaborators',
+          ),
+          // Public/Private toggle
           StreamBuilder<Project?>(
             stream: _projectStream,
             builder: (context, snapshot) {
@@ -468,13 +334,6 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
               final project = snapshot.data!;
               return Row(
                 children: [
-                  // Invite button
-                  IconButton(
-                    icon: const Icon(Icons.person_add),
-                    onPressed: _showInviteCollaboratorsOverlay,
-                    tooltip: 'Invite Collaborators',
-                  ),
-                  // Visibility toggle
                   Text(
                     project.isPublic ? 'Public' : 'Private',
                     style: TextStyle(

@@ -12,9 +12,22 @@ class ProjectsScreen extends StatefulWidget {
   State<ProjectsScreen> createState() => _ProjectsScreenState();
 }
 
-class _ProjectsScreenState extends State<ProjectsScreen> {
+class _ProjectsScreenState extends State<ProjectsScreen> with SingleTickerProviderStateMixin {
   final _projectService = ProjectService();
   final _auth = FirebaseAuth.instance;
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
 
   void _createProject() {
     showDialog(
@@ -52,144 +65,223 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My Projects'),
+        title: const Text('Projects'),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: _logout,
           ),
         ],
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(
+              icon: Icon(Icons.folder),
+              text: 'My Projects',
+            ),
+            Tab(
+              icon: Icon(Icons.search),
+              text: 'Find Projects',
+            ),
+          ],
+        ),
       ),
-      body: StreamBuilder<List<Project>>(
-        stream: _projectService.getUserProjects(user.uid),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            print('ProjectsScreen error: ${snapshot.error}');
-            if (snapshot.error.toString().contains('permission-denied')) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.lock, size: 48, color: Colors.red),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Access Denied',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.red,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'You don\'t have permission to view these projects.',
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 24),
-                    ElevatedButton.icon(
-                      onPressed: _logout,
-                      icon: const Icon(Icons.logout),
-                      label: const Text('Sign Out'),
-                    ),
-                  ],
-                ),
-              );
-            }
-            
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Error loading projects: ${snapshot.error}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.red),
-                  ),
-                  const SizedBox(height: 24),
-                  ElevatedButton.icon(
-                    onPressed: () => setState(() {}), // Retry loading
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry'),
-                  ),
-                ],
-              ),
-            );
-          }
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          // My Projects Tab
+          StreamBuilder<List<Project>>(
+            stream: _projectService.getUserAccessibleProjects(user.uid),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                print('ProjectsScreen error: ${snapshot.error}');
+                if (snapshot.error.toString().contains('permission-denied')) {
+                  return _buildErrorView(
+                    'Access Denied',
+                    'You don\'t have permission to view these projects.',
+                  );
+                }
+                return _buildErrorView(
+                  'Error',
+                  'Error loading projects: ${snapshot.error}',
+                );
+              }
 
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Loading your projects...'),
-                ],
-              ),
-            );
-          }
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return _buildLoadingView();
+              }
 
-          final projects = snapshot.data ?? [];
+              final projects = snapshot.data ?? [];
+              if (projects.isEmpty) {
+                return _buildEmptyView();
+              }
 
-          if (projects.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(
-                    Icons.video_library_outlined,
-                    size: 64,
-                    color: Colors.grey,
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'No projects yet',
-                    style: TextStyle(
-                      fontSize: 20,
-                      color: Colors.grey,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  ElevatedButton.icon(
-                    onPressed: _createProject,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Create Your First Project'),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          return ListView.builder(
-            padding: const EdgeInsets.all(8),
-            itemCount: projects.length,
-            itemBuilder: (context, index) {
-              final project = projects[index];
-              return Card(
-                child: ListTile(
-                  title: Text(project.name),
-                  subtitle: Text(project.description),
-                  trailing: Text('${project.videoIds.length} videos'),
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ProjectDetailsScreen(project: project),
-                      ),
-                    );
-                  },
-                ),
-              );
+              return _buildProjectList(projects);
             },
-          );
-        },
+          ),
+          // Find Projects Tab
+          StreamBuilder<List<Project>>(
+            stream: _projectService.getPublicProjects(),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                return _buildErrorView(
+                  'Error',
+                  'Error loading public projects: ${snapshot.error}',
+                );
+              }
+
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return _buildLoadingView();
+              }
+
+              final projects = snapshot.data ?? [];
+              if (projects.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(
+                        Icons.search_off,
+                        size: 64,
+                        color: Colors.grey,
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'No public projects found',
+                        style: TextStyle(
+                          fontSize: 20,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return _buildProjectList(projects);
+            },
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _createProject,
         child: const Icon(Icons.add),
       ),
+    );
+  }
+
+  Widget _buildErrorView(String title, String message) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline, size: 48, color: Colors.red),
+          const SizedBox(height: 16),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.red,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh),
+            label: const Text('Retry'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingView() {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          CircularProgressIndicator(),
+          SizedBox(height: 16),
+          Text('Loading projects...'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyView() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.video_library_outlined,
+            size: 64,
+            color: Colors.grey,
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'No projects yet',
+            style: TextStyle(
+              fontSize: 20,
+              color: Colors.grey,
+            ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _createProject,
+            icon: const Icon(Icons.add),
+            label: const Text('Create Your First Project'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProjectList(List<Project> projects) {
+    return ListView.builder(
+      padding: const EdgeInsets.all(8),
+      itemCount: projects.length,
+      itemBuilder: (context, index) {
+        final project = projects[index];
+        return Card(
+          child: ListTile(
+            leading: Icon(
+              project.isPublic ? Icons.public : Icons.lock_outline,
+              color: project.isPublic ? Colors.green : Colors.grey,
+            ),
+            title: Text(project.name),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(project.description),
+                const SizedBox(height: 4),
+                Text(
+                  '${project.videoIds.length} videos',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+            isThreeLine: true,
+            trailing: project.userId == _auth.currentUser?.uid
+              ? const Icon(Icons.edit, color: Colors.blue)
+              : const Icon(Icons.visibility, color: Colors.grey),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ProjectDetailsScreen(project: project),
+                ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }

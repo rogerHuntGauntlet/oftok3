@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "754996076373",
+    "firebase_url": "https://ohftok-gauntlet-default-rtdb.firebaseio.com",
+    "project_id": "ohftok-gauntlet",
+    "storage_bucket": "ohftok-gauntlet.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:754996076373:android:7dbd08fc5eabcf7b3e59dc",
+        "android_client_info": {
+          "package_name": "io.gauntletai.ohftok_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "754996076373-qdi51cqjpm50ssc9hhjfhimcoboqv1q3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDB1hd1aZopeDjtw8ROSsJlplXZfSAaEZU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "754996076373-qdi51cqjpm50ssc9hhjfhimcoboqv1q3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "754996076373-mlpp36kp871qb6bnnojnikutdmo3orav.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.ohftokv3"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
