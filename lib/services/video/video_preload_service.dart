@@ -3,12 +3,12 @@ import 'video_player_provider.dart';
 import 'video_player_service.dart';
 
 class VideoPreloadService {
-  final VideoPlayerFactory _factory;
+  final VideoPlayerFactory? _factory;
   final Map<String, VideoPlayerService> _preloadedPlayers = {};
   final int _maxPreloadedVideos;
 
   VideoPreloadService({
-    required VideoPlayerFactory factory,
+    VideoPlayerFactory? factory,
     int maxPreloadedVideos = 3,
   }) : _factory = factory,
        _maxPreloadedVideos = maxPreloadedVideos;
@@ -22,9 +22,9 @@ class VideoPreloadService {
 
     // Preload new videos
     for (final url in urlsToPreload) {
-      if (!_preloadedPlayers.containsKey(url)) {
+      if (!_preloadedPlayers.containsKey(url) && _factory != null) {
         try {
-          final player = _factory.createPlayer();
+          final player = _factory!.createPlayer();
           await player.initialize(url);
           _preloadedPlayers[url] = player;
         } catch (e) {

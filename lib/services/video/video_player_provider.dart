@@ -10,10 +10,15 @@ class VideoPlayerProvider extends ChangeNotifier {
   bool _isPlaying = false;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
+  bool _isDisposed = false;
 
   final VideoPlayerFactory factory;
+  final Function(String)? onError;
   
-  VideoPlayerProvider({required this.factory});
+  VideoPlayerProvider({
+    required this.factory,
+    this.onError,
+  });
 
   // Getters
   VideoPlayerService? get player => _player;
@@ -51,12 +56,17 @@ class VideoPlayerProvider extends ChangeNotifier {
       // Setup streams
       _setupStreams();
       
-      // Start playback
-      await _player!.play();
+      // Start playback if not disposed
+      if (!_isDisposed) {
+        await _player!.play();
+      }
     } catch (e) {
       _setError(e.toString());
+      rethrow;
     } finally {
-      _setLoading(false);
+      if (!_isDisposed) {
+        _setLoading(false);
+      }
     }
   }
 
@@ -91,19 +101,33 @@ class VideoPlayerProvider extends ChangeNotifier {
   void _setupStreams() {
     _player?.positionStream.listen(
       (position) {
-        _position = position;
-        notifyListeners();
+        if (!_isDisposed) {
+          _position = position;
+          notifyListeners();
+        }
       },
       onError: (error) => _setError(error.toString()),
+      cancelOnError: false,
     );
 
     _player?.playingStream.listen(
       (playing) {
-        _isPlaying = playing;
-        notifyListeners();
+        if (!_isDisposed) {
+          _isPlaying = playing;
+          notifyListeners();
+        }
       },
       onError: (error) => _setError(error.toString()),
+      cancelOnError: false,
     );
+
+    // Get initial duration
+    _player?.duration.then((duration) {
+      if (!_isDisposed) {
+        _duration = duration;
+        notifyListeners();
+      }
+    }).catchError((error) => _setError(error.toString()));
   }
 
   /// Cleans up the current player instance
@@ -117,22 +141,27 @@ class VideoPlayerProvider extends ChangeNotifier {
   }
 
   void _setLoading(bool loading) {
+    if (_isDisposed) return;
     _isLoading = loading;
     notifyListeners();
   }
 
   void _setError(String error) {
+    if (_isDisposed) return;
     _error = error;
+    onError?.call(error);
     notifyListeners();
   }
 
   void _clearError() {
+    if (_isDisposed) return;
     _error = null;
     notifyListeners();
   }
 
   @override
   Future<void> dispose() async {
+    _isDisposed = true;
     await _cleanupCurrentPlayer();
     super.dispose();
   }
