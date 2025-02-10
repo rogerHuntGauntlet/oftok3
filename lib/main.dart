@@ -2,12 +2,21 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:media_kit/media_kit.dart';
 import 'firebase_options.dart';
 import 'screens/login_screen.dart';
 import 'screens/projects_screen.dart';
 
 void main() async {
+  // Ensure Flutter bindings are initialized
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize MediaKit
+  MediaKit.ensureInitialized();
+  
+  // Load environment variables
+  await dotenv.load();
   
   // Initialize Firebase with the generated options
   await Firebase.initializeApp(

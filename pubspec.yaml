@@ -36,11 +36,11 @@ dependencies:
   cupertino_icons: ^1.0.2
 
   # Firebase
-  firebase_core: ^2.24.2
-  firebase_auth: ^4.15.3
-  cloud_firestore: ^4.13.6
-  firebase_storage: ^11.5.6
-  cloud_functions: ^4.5.8
+  firebase_core: ^2.32.0
+  firebase_auth: ^4.16.0
+  cloud_firestore: ^4.17.5
+  firebase_storage: ^11.6.5
+  cloud_functions: ^4.7.6
   firebase_app_check: ^0.2.1+8
 
   # HTTP
@@ -48,16 +48,20 @@ dependencies:
 
   # Video handling
   video_player: ^2.8.1
-  image_picker: ^1.0.5
+  image_picker: ^1.0.7
   provider: ^6.1.1
   media_kit: ^1.1.10                    # Primary package
   media_kit_video: ^1.2.4               # For video rendering
   media_kit_libs_video: ^1.0.4          # Native video dependencies
 
   # Utils
-  uuid: ^4.2.2
+  uuid: ^4.3.3
   path: ^1.8.3
   intl: ^0.19.0
+  flutter_dotenv: ^5.1.0
+  dart_openai: ^5.0.0
+  path_provider: ^2.1.2
+  ffmpeg_kit_flutter: ^6.0.3  # Added for video processing and thumbnail generation
 
 dev_dependencies:
   flutter_test:
@@ -80,6 +84,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # Add assets section
+  assets:
+    - .env
 
   # To add assets to your application, add an assets section, like this:
   # assets:

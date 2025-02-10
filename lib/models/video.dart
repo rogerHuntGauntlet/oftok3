@@ -8,6 +8,7 @@ class Video {
   final DateTime uploadedAt;
   final String thumbnailUrl;
   final int duration; // in seconds
+  final String? caption;
 
   Video({
     required this.id,
@@ -17,6 +18,7 @@ class Video {
     required this.uploadedAt,
     required this.thumbnailUrl,
     required this.duration,
+    this.caption,
   });
 
   Map<String, dynamic> toJson() {
@@ -28,6 +30,7 @@ class Video {
       'uploadedAt': uploadedAt,
       'thumbnailUrl': thumbnailUrl,
       'duration': duration,
+      'caption': caption,
     };
   }
 
@@ -45,6 +48,7 @@ class Video {
             : DateTime.now(),
         thumbnailUrl: json['thumbnailUrl'] as String? ?? '',
         duration: json['duration'] as int? ?? 0,
+        caption: json['caption'] as String?,
       );
     } catch (e) {
       print('Error creating Video from JSON: $e');

@@ -43,6 +43,13 @@
    - [ ] Enable project editing
    - [ ] Add project deletion
 
+2. **AI Caption Generator**
+   - [ ] Add "Generate Caption" button to video interface
+   - [ ] Create Cloud Function for OpenAI caption generation
+   - [ ] Implement simple API call from Flutter to Cloud Function
+   - [ ] Add loading state while caption generates
+   - [ ] Enable users to accept/edit generated caption
+
 ## 📝 Todo
 1. **Video Feed & Playback**
    - [ ] Create video feed screen

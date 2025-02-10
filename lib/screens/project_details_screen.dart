@@ -489,6 +489,124 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     );
   }
 
+  Future<void> _showVideoMetadataDialog(Video video) async {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(video.title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: VideoThumbnail(
+                videoUrl: video.url,
+                thumbnailUrl: video.thumbnailUrl,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('Caption: ${video.caption ?? 'No caption yet'}'),
+            const SizedBox(height: 16),
+            Center(
+              child: ElevatedButton.icon(
+                onPressed: () async {
+                  try {
+                    // Show loading
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (context) => const AlertDialog(
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircularProgressIndicator(),
+                            SizedBox(height: 16),
+                            Text('Generating caption and thumbnail...'),
+                          ],
+                        ),
+                      ),
+                    );
+
+                    try {
+                      // Call the AI caption service and get updated video
+                      final updatedVideo = await _videoService.generateAICaption(video.id);
+                      
+                      if (!mounted) return;
+                      Navigator.of(context).pop(); // Close loading dialog
+                      
+                      // Show updated video metadata in a new dialog
+                      showDialog(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: Text(updatedVideo.title),
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              AspectRatio(
+                                aspectRatio: 16 / 9,
+                                child: VideoThumbnail(
+                                  videoUrl: updatedVideo.url,
+                                  thumbnailUrl: updatedVideo.thumbnailUrl,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Text('Caption: ${updatedVideo.caption ?? 'No caption'}'),
+                            ],
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: const Text('Close'),
+                            ),
+                          ],
+                        ),
+                      );
+                      
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Caption and thumbnail generated successfully!'),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      Navigator.of(context).pop(); // Close loading dialog
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Error: ${e.toString()}'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
+                  } catch (e) {
+                    if (!mounted) return;
+                    Navigator.of(context).pop(); // Close loading dialog
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Error: ${e.toString()}'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.auto_awesome),
+                label: const Text('Generate AI Caption'),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -705,6 +823,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                                             builder: (context, candidateData, rejectedData) {
                                               return GestureDetector(
                                                 onTap: () => _viewVideos(project.id),
+                                                onLongPress: () => _showVideoMetadataDialog(video),
                                                 child: Card(
                                                   clipBehavior: Clip.antiAlias,
                                                   child: Stack(
