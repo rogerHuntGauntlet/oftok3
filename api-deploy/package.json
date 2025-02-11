@@ -1,0 +1,12 @@
+{
+  "name": "video-generation-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node api/index.js"
+  },
+  "dependencies": {
+    "replicate": "^0.25.2"
+  }
+} 

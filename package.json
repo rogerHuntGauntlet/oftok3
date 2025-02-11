@@ -1,9 +1,9 @@
 {
-  "name": "video-generator",
+  "name": "ohftok-video-api",
   "version": "1.0.0",
   "type": "module",
-  "description": "Generate videos using Replicate API",
-  "main": "generate_video.js",
+  "description": "Video generation API for OHFtok",
+  "main": "api.js",
   "scripts": {
     "start": "node generate_video.js"
   },

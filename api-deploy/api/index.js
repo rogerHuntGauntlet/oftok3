@@ -1,11 +1,23 @@
-const Replicate = require('replicate');
+import Replicate from 'replicate';
 
-module.exports = async (req, res) => {
-  // Enable CORS with Authorization header
-  res.setHeader('Access-Control-Allow-Credentials', true);
+export default async function handler(req, res) {
+  // Debug logging
+  console.log('Request received:', {
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    body: req.body,
+    env: {
+      hasReplicateToken: !!process.env.REPLICATE_API_TOKEN,
+      tokenLength: process.env.REPLICATE_API_TOKEN ? process.env.REPLICATE_API_TOKEN.length : 0
+    }
+  });
+
+  // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
 
   // Handle OPTIONS request
   if (req.method === 'OPTIONS') {
@@ -17,14 +29,28 @@ module.exports = async (req, res) => {
     // Verify authentication
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.log('Missing or invalid Authorization header:', authHeader);
       return res.status(401).json({
         success: false,
-        error: 'Authentication required'
+        error: 'Authentication required - Bearer token missing'
       });
     }
 
     const token = authHeader.split(' ')[1];
+    if (!process.env.REPLICATE_API_TOKEN) {
+      console.error('REPLICATE_API_TOKEN not set in environment');
+      return res.status(500).json({
+        success: false,
+        error: 'Server configuration error - API token not set'
+      });
+    }
+
     if (token !== process.env.REPLICATE_API_TOKEN) {
+      console.log('Token mismatch:', {
+        providedToken: token,
+        expectedToken: process.env.REPLICATE_API_TOKEN,
+        match: token === process.env.REPLICATE_API_TOKEN
+      });
       return res.status(401).json({
         success: false,
         error: 'Invalid authentication token'
@@ -38,11 +64,13 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'Prediction ID is required' });
       }
 
+      console.log('Checking prediction status:', id);
       const replicate = new Replicate({
         auth: process.env.REPLICATE_API_TOKEN,
       });
 
       const prediction = await replicate.predictions.get(id);
+      console.log('Prediction status:', prediction.status);
       
       return res.json({
         success: true,
@@ -60,6 +88,7 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'Prompt is required' });
       }
 
+      console.log('Starting video generation with prompt:', prompt);
       const replicate = new Replicate({
         auth: process.env.REPLICATE_API_TOKEN,
       });
@@ -70,6 +99,7 @@ module.exports = async (req, res) => {
         input: { prompt }
       });
 
+      console.log('Prediction created:', prediction.id);
       return res.json({
         success: true,
         id: prediction.id,
@@ -81,9 +111,10 @@ module.exports = async (req, res) => {
 
   } catch (error) {
     console.error('Video generation error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
-}; 
+} 

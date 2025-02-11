@@ -1,8 +1,9 @@
 {
   "name": "ohftok-video-api",
   "version": "1.0.0",
+  "type": "module",
   "description": "Video generation API for OHFtok",
-  "main": "index.js",
+  "main": "genVid.js",
   "dependencies": {
     "replicate": "^0.25.2"
   }
