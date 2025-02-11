@@ -13,6 +13,8 @@ class Project {
   final int score;
   final int likeCount;
   final int commentCount;
+  final Duration totalSessionDuration;
+  final int sessionCount;
 
   Project({
     required this.id,
@@ -27,13 +29,17 @@ class Project {
     int? score,
     int? likeCount,
     int? commentCount,
+    Duration? totalSessionDuration,
+    int? sessionCount,
   })  : videoIds = videoIds ?? [],
         isPublic = isPublic ?? false,
         collaboratorIds = collaboratorIds ?? [],
         favoritedBy = favoritedBy ?? [],
         score = score ?? 0,
         likeCount = likeCount ?? 0,
-        commentCount = commentCount ?? 0;
+        commentCount = commentCount ?? 0,
+        totalSessionDuration = totalSessionDuration ?? Duration.zero,
+        sessionCount = sessionCount ?? 0;
 
   Map<String, dynamic> toJson() {
     return {
@@ -49,6 +55,8 @@ class Project {
       'score': score,
       'likeCount': likeCount,
       'commentCount': commentCount,
+      'totalSessionDuration': totalSessionDuration.inMilliseconds,
+      'sessionCount': sessionCount,
     };
   }
 
@@ -68,6 +76,8 @@ class Project {
       score: json['score'] as int? ?? 0,
       likeCount: json['likeCount'] as int? ?? 0,
       commentCount: json['commentCount'] as int? ?? 0,
+      totalSessionDuration: Duration(milliseconds: json['totalSessionDuration'] as int? ?? 0),
+      sessionCount: json['sessionCount'] as int? ?? 0,
     );
   }
 
@@ -84,6 +94,8 @@ class Project {
     int? score,
     int? likeCount,
     int? commentCount,
+    Duration? totalSessionDuration,
+    int? sessionCount,
   }) {
     return Project(
       id: id ?? this.id,
@@ -98,6 +110,8 @@ class Project {
       score: score ?? this.score,
       likeCount: likeCount ?? this.likeCount,
       commentCount: commentCount ?? this.commentCount,
+      totalSessionDuration: totalSessionDuration ?? this.totalSessionDuration,
+      sessionCount: sessionCount ?? this.sessionCount,
     );
   }
 

@@ -46,6 +46,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   double _uploadProgress = 0;
   late Stream<Project?> _projectStream;
   Video? _draggedVideo;
+  DateTime? _sessionStartTime;
 
   @override
   void initState() {
@@ -66,10 +67,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
           }
         });
 
-    // Force immediate data load
+    // Force immediate data load and start session tracking
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       // Increment project score
       await _projectService.incrementProjectScore(widget.project.id, 1);
+      
+      // Start session tracking
+      _sessionStartTime = DateTime.now();
       
       // Force stream to emit current value
       if (mounted) {
@@ -82,6 +86,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
 
   @override
   void dispose() {
+    // Update session duration when leaving the screen
+    if (_sessionStartTime != null) {
+      final sessionDuration = DateTime.now().difference(_sessionStartTime!);
+      _projectService.updateSessionMetrics(widget.project.id, sessionDuration);
+    }
+    
     _searchController.dispose();
     _commentController.dispose();
     super.dispose();

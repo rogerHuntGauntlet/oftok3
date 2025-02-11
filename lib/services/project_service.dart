@@ -462,4 +462,98 @@ class ProjectService {
       throw Exception('Failed to create project with AI: $e');
     }
   }
+
+  // Update session metrics for a project
+  Future<void> updateSessionMetrics(String projectId, Duration sessionDuration) async {
+    print('Updating session metrics for project $projectId with duration ${sessionDuration.inSeconds}s'); // Debug print
+    try {
+      await _firestore.collection('projects').doc(projectId).update({
+        'totalSessionDuration': FieldValue.increment(sessionDuration.inMilliseconds),
+        'sessionCount': FieldValue.increment(1),
+      });
+      print('Successfully updated session metrics'); // Debug print
+    } catch (e) {
+      print('Error updating session metrics: $e');
+      rethrow;
+    }
+  }
+
+  // Get average session duration for a project
+  Future<Duration> getAverageSessionDuration(String projectId) async {
+    try {
+      final doc = await _firestore.collection('projects').doc(projectId).get();
+      if (!doc.exists) throw Exception('Project not found');
+
+      final data = doc.data()!;
+      final totalDuration = data['totalSessionDuration'] as int? ?? 0;
+      final sessionCount = data['sessionCount'] as int? ?? 0;
+
+      if (sessionCount == 0) return Duration.zero;
+      return Duration(milliseconds: totalDuration ~/ sessionCount);
+    } catch (e) {
+      print('Error getting average session duration: $e');
+      rethrow;
+    }
+  }
+
+  // Get projects sorted by engagement (combining session metrics and score)
+  Stream<List<Project>> getProjectsSortedByEngagement({int limit = 20}) {
+    print('Getting projects sorted by engagement'); // Debug print
+    return _firestore
+        .collection('projects')
+        .where('isPublic', isEqualTo: true)
+        .orderBy('score', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map((snapshot) {
+          try {
+            final projects = snapshot.docs.map((doc) {
+              try {
+                final data = doc.data();
+                data['id'] = doc.id;
+                return Project.fromJson(data);
+              } catch (e) {
+                print('Error parsing project document ${doc.id}: $e');
+                return null;
+              }
+            })
+            .where((project) => project != null)
+            .cast<Project>()
+            .toList();
+
+            // Sort projects by engagement score (combination of session metrics and score)
+            projects.sort((a, b) {
+              // Calculate engagement scores
+              final aEngagement = _calculateEngagementScore(a);
+              final bEngagement = _calculateEngagementScore(b);
+              return bEngagement.compareTo(aEngagement);
+            });
+            
+            print('Found ${projects.length} projects sorted by engagement'); // Debug print
+            return projects;
+          } catch (e) {
+            print('Error processing projects by engagement: $e');
+            rethrow;
+          }
+        });
+  }
+
+  // Calculate engagement score based on multiple metrics
+  double _calculateEngagementScore(Project project) {
+    const sessionWeight = 0.4;
+    const scoreWeight = 0.3;
+    const favoritesWeight = 0.2;
+    const commentsWeight = 0.1;
+
+    // Normalize session duration (assuming 5 minutes is a good session)
+    final avgSessionDuration = project.sessionCount > 0
+        ? project.totalSessionDuration.inSeconds / project.sessionCount
+        : 0;
+    final normalizedSessionScore = avgSessionDuration / 300; // 300 seconds = 5 minutes
+
+    return (normalizedSessionScore * sessionWeight) +
+           (project.score * scoreWeight) +
+           (project.favoritedBy.length * favoritesWeight) +
+           (project.commentCount * commentsWeight);
+  }
 } 
