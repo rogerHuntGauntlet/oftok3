@@ -68,6 +68,7 @@ dependencies:
   graphview: ^1.2.0  # Added for network graph visualization
   in_app_purchase: ^3.2.1
   url_launcher: ^6.2.5
+  fl_chart: ^0.66.2
 
 dev_dependencies:
   flutter_test:

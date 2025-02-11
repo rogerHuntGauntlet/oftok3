@@ -13,8 +13,11 @@ class Project {
   final int score;
   final int likeCount;
   final int commentCount;
+  final int shareCount;
   final Duration totalSessionDuration;
   final int sessionCount;
+  final Map<String, double> videoCompletionRates;
+  final DateTime lastEngagement;
 
   Project({
     required this.id,
@@ -29,8 +32,11 @@ class Project {
     int? score,
     int? likeCount,
     int? commentCount,
+    int? shareCount,
     Duration? totalSessionDuration,
     int? sessionCount,
+    Map<String, double>? videoCompletionRates,
+    DateTime? lastEngagement,
   })  : videoIds = videoIds ?? [],
         isPublic = isPublic ?? false,
         collaboratorIds = collaboratorIds ?? [],
@@ -38,8 +44,11 @@ class Project {
         score = score ?? 0,
         likeCount = likeCount ?? 0,
         commentCount = commentCount ?? 0,
+        shareCount = shareCount ?? 0,
         totalSessionDuration = totalSessionDuration ?? Duration.zero,
-        sessionCount = sessionCount ?? 0;
+        sessionCount = sessionCount ?? 0,
+        videoCompletionRates = videoCompletionRates ?? {},
+        lastEngagement = lastEngagement ?? DateTime.now();
 
   Map<String, dynamic> toJson() {
     return {
@@ -55,8 +64,11 @@ class Project {
       'score': score,
       'likeCount': likeCount,
       'commentCount': commentCount,
+      'shareCount': shareCount,
       'totalSessionDuration': totalSessionDuration.inMilliseconds,
       'sessionCount': sessionCount,
+      'videoCompletionRates': videoCompletionRates,
+      'lastEngagement': lastEngagement.toIso8601String(),
     };
   }
 
@@ -76,8 +88,15 @@ class Project {
       score: json['score'] as int? ?? 0,
       likeCount: json['likeCount'] as int? ?? 0,
       commentCount: json['commentCount'] as int? ?? 0,
+      shareCount: json['shareCount'] as int? ?? 0,
       totalSessionDuration: Duration(milliseconds: json['totalSessionDuration'] as int? ?? 0),
       sessionCount: json['sessionCount'] as int? ?? 0,
+      videoCompletionRates: Map<String, double>.from(json['videoCompletionRates'] ?? {}),
+      lastEngagement: json['lastEngagement'] is Timestamp
+          ? (json['lastEngagement'] as Timestamp).toDate()
+          : json['lastEngagement'] != null
+              ? DateTime.parse(json['lastEngagement'] as String)
+              : DateTime.now(),
     );
   }
 
@@ -94,8 +113,11 @@ class Project {
     int? score,
     int? likeCount,
     int? commentCount,
+    int? shareCount,
     Duration? totalSessionDuration,
     int? sessionCount,
+    Map<String, double>? videoCompletionRates,
+    DateTime? lastEngagement,
   }) {
     return Project(
       id: id ?? this.id,
@@ -110,8 +132,11 @@ class Project {
       score: score ?? this.score,
       likeCount: likeCount ?? this.likeCount,
       commentCount: commentCount ?? this.commentCount,
+      shareCount: shareCount ?? this.shareCount,
       totalSessionDuration: totalSessionDuration ?? this.totalSessionDuration,
       sessionCount: sessionCount ?? this.sessionCount,
+      videoCompletionRates: videoCompletionRates ?? this.videoCompletionRates,
+      lastEngagement: lastEngagement ?? this.lastEngagement,
     );
   }
 
@@ -122,4 +147,17 @@ class Project {
   bool isFavoritedBy(String userId) {
     return favoritedBy.contains(userId);
   }
+
+  // Analytics helper methods
+  double get averageSessionDuration {
+    if (sessionCount == 0) return 0;
+    return totalSessionDuration.inMilliseconds / sessionCount;
+  }
+
+  double get averageVideoCompletionRate {
+    if (videoCompletionRates.isEmpty) return 0;
+    return videoCompletionRates.values.reduce((a, b) => a + b) / videoCompletionRates.length;
+  }
+
+  int get totalEngagements => likeCount + commentCount + shareCount;
 } 

@@ -12,7 +12,7 @@ class VideoThumbnail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (thumbnailUrl != null) {
+    if (thumbnailUrl != null && thumbnailUrl!.isNotEmpty && thumbnailUrl!.startsWith('http')) {
       return Image.network(
         thumbnailUrl!,
         fit: BoxFit.cover,

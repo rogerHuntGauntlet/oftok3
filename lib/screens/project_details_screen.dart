@@ -19,6 +19,7 @@ import '../widgets/token_purchase_dialog.dart';
 import '../widgets/app_bottom_navigation.dart';
 import '../services/social_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../screens/project_analytics_screen.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final Project project;
@@ -1329,6 +1330,17 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
             icon: const Icon(Icons.person_add),
             onPressed: () => _showInviteCollaboratorsOverlay(),
             tooltip: 'Invite Collaborators',
+          ),
+          IconButton(
+            icon: const Icon(Icons.analytics),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ProjectAnalyticsScreen(project: widget.project),
+                ),
+              );
+            },
           ),
           StreamBuilder<Project?>(
             stream: _projectStream,
