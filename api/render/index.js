@@ -1,11 +1,11 @@
 const Replicate = require('replicate');
 
 module.exports = async (req, res) => {
-  // Enable CORS
+  // Enable CORS with Authorization header
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
 
   // Handle OPTIONS request
   if (req.method === 'OPTIONS') {
@@ -14,6 +14,23 @@ module.exports = async (req, res) => {
   }
 
   try {
+    // Verify authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    const token = authHeader.split(' ')[1];
+    if (token !== process.env.REPLICATE_API_TOKEN) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid authentication token'
+      });
+    }
+
     // Check if this is a status check request
     if (req.method === 'GET') {
       const { id } = req.query;
