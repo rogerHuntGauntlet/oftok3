@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/video/video_player_provider.dart';
 import '../services/video/media_kit_player_service.dart';
 import '../services/video/video_player_service.dart';
+import '../services/project_service.dart';
 import '../widgets/video_player_widget.dart';
 import '../widgets/save_button.dart';
 import '../services/auth_service.dart';
@@ -32,8 +33,10 @@ class VideoFeedItem extends StatefulWidget {
 
 class _VideoFeedItemState extends State<VideoFeedItem> {
   late final VideoPlayerProvider _provider;
+  final ProjectService _projectService = ProjectService();
   bool _isInitialized = false;
   String? _error;
+  bool _hasTrackedView = false;
 
   @override
   void initState() {
@@ -115,6 +118,13 @@ class _VideoFeedItemState extends State<VideoFeedItem> {
     );
   }
 
+  void _onVideoStarted() {
+    if (!_hasTrackedView) {
+      _hasTrackedView = true;
+      _projectService.incrementProjectScore(widget.projectId, 1);
+    }
+  }
+
   @override
   void dispose() {
     _provider.dispose();
@@ -172,6 +182,7 @@ class _VideoFeedItemState extends State<VideoFeedItem> {
                 autoPlay: widget.autoPlay,
                 showControls: true,
                 preloadedPlayer: widget.preloadedPlayer,
+                onVideoStarted: _onVideoStarted,
               ),
               // Project name header
               Positioned(

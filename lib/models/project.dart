@@ -3,23 +3,31 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class Project {
   final String id;
   final String name;
-  final String description;
+  final String? description;
   final String userId;
   final DateTime createdAt;
-  final List<String> videoIds; // References to videos in the videos collection
+  final List<String> videoIds;
   final bool isPublic;
   final List<String> collaboratorIds;
+  final List<String> favoritedBy;
+  final int score;
 
   Project({
     required this.id,
     required this.name,
-    required this.description,
+    this.description,
     required this.userId,
     required this.createdAt,
-    required this.videoIds,
-    this.isPublic = false,
+    List<String>? videoIds,
+    bool? isPublic,
     List<String>? collaboratorIds,
-  }) : collaboratorIds = collaboratorIds ?? [];
+    List<String>? favoritedBy,
+    int? score,
+  })  : videoIds = videoIds ?? [],
+        isPublic = isPublic ?? false,
+        collaboratorIds = collaboratorIds ?? [],
+        favoritedBy = favoritedBy ?? [],
+        score = score ?? 0;
 
   Map<String, dynamic> toJson() {
     return {
@@ -27,63 +35,63 @@ class Project {
       'name': name,
       'description': description,
       'userId': userId,
-      'createdAt': Timestamp.fromDate(createdAt),
+      'createdAt': createdAt.toIso8601String(),
       'videoIds': videoIds,
       'isPublic': isPublic,
       'collaboratorIds': collaboratorIds,
+      'favoritedBy': favoritedBy,
+      'score': score,
     };
   }
 
   factory Project.fromJson(Map<String, dynamic> json) {
-    try {
-      print('Creating Project from JSON: $json'); // Debug print
-      final project = Project(
-        id: json['id'] as String? ?? '',
-        name: json['name'] as String? ?? 'Untitled Project',
-        description: json['description'] as String? ?? '',
-        userId: json['userId'] as String? ?? '',
-        createdAt: json['createdAt'] != null
-            ? (json['createdAt'] is Timestamp)
-                ? (json['createdAt'] as Timestamp).toDate()
-                : DateTime.tryParse(json['createdAt'].toString()) ?? DateTime.now()
-            : DateTime.now(),
-        videoIds: (json['videoIds'] is List)
-            ? List<String>.from(json['videoIds'])
-            : [],
-        isPublic: json['isPublic'] as bool? ?? false,
-        collaboratorIds: (json['collaboratorIds'] is List)
-            ? List<String>.from(json['collaboratorIds'])
-            : [],
-      );
-      print('Successfully created Project: ${project.id}'); // Debug print
-      return project;
-    } catch (e) {
-      print('Error creating Project from JSON: $e');
-      print('Problematic JSON: $json');
-      rethrow;
-    }
+    return Project(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      description: json['description'] as String?,
+      userId: json['userId'] as String,
+      createdAt: json['createdAt'] is Timestamp
+          ? (json['createdAt'] as Timestamp).toDate()
+          : DateTime.parse(json['createdAt'] as String),
+      videoIds: List<String>.from(json['videoIds'] ?? []),
+      isPublic: json['isPublic'] as bool? ?? false,
+      collaboratorIds: List<String>.from(json['collaboratorIds'] ?? []),
+      favoritedBy: List<String>.from(json['favoritedBy'] ?? []),
+      score: json['score'] as int? ?? 0,
+    );
   }
 
   Project copyWith({
+    String? id,
     String? name,
     String? description,
+    String? userId,
+    DateTime? createdAt,
     List<String>? videoIds,
     bool? isPublic,
     List<String>? collaboratorIds,
+    List<String>? favoritedBy,
+    int? score,
   }) {
     return Project(
-      id: id,
+      id: id ?? this.id,
       name: name ?? this.name,
       description: description ?? this.description,
-      userId: userId,
-      createdAt: createdAt,
+      userId: userId ?? this.userId,
+      createdAt: createdAt ?? this.createdAt,
       videoIds: videoIds ?? this.videoIds,
       isPublic: isPublic ?? this.isPublic,
       collaboratorIds: collaboratorIds ?? this.collaboratorIds,
+      favoritedBy: favoritedBy ?? this.favoritedBy,
+      score: score ?? this.score,
     );
   }
 
   bool canEdit(String userId) {
     return this.userId == userId || collaboratorIds.contains(userId);
+  }
+
+  bool isFavoritedBy(String userId) {
+    return favoritedBy.contains(userId);
   }
 } 

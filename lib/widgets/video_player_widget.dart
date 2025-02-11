@@ -10,6 +10,7 @@ class VideoPlayerWidget extends StatefulWidget {
   final bool autoPlay;
   final bool showControls;
   final VideoPlayerService? preloadedPlayer;
+  final VoidCallback? onVideoStarted;
 
   const VideoPlayerWidget({
     super.key,
@@ -17,6 +18,7 @@ class VideoPlayerWidget extends StatefulWidget {
     this.autoPlay = true,
     this.showControls = true,
     this.preloadedPlayer,
+    this.onVideoStarted,
   });
 
   @override
@@ -27,6 +29,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   bool _isInitializing = true;
   bool _hasError = false;
   String? _errorMessage;
+  bool _hasNotifiedStart = false;
 
   @override
   void initState() {
@@ -41,6 +44,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _isInitializing = true;
       _hasError = false;
       _errorMessage = null;
+      _hasNotifiedStart = false;
     });
 
     try {
@@ -51,6 +55,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         widget.videoUrl,
         preloadedPlayer: widget.preloadedPlayer,
       );
+
+      // Set up listener for playback state
+      provider.addListener(() {
+        if (!_hasNotifiedStart && provider.isPlaying) {
+          _hasNotifiedStart = true;
+          widget.onVideoStarted?.call();
+        }
+      });
 
       // Handle autoplay
       if (widget.autoPlay) {

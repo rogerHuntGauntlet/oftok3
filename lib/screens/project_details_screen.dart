@@ -9,7 +9,9 @@ import '../services/project_service.dart';
 import '../services/user_service.dart';
 import '../services/video/video_preload_service.dart';
 import '../widgets/video_thumbnail.dart';
+import '../widgets/video_generation_dialog.dart';
 import 'video_feed_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final Project project;
@@ -42,6 +44,11 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     _projectStream = _projectService
         .getProjectStream(widget.project.id)
         .asBroadcastStream();
+
+    // Increment project score when screen is loaded
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _projectService.incrementProjectScore(widget.project.id, 1);
+    });
   }
 
   @override
@@ -506,7 +513,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            Text('Caption: ${video.caption ?? 'No caption yet'}'),
+            Text('Description: ${video.description ?? 'No description yet'}'),
             const SizedBox(height: 16),
             Center(
               child: ElevatedButton.icon(
@@ -522,7 +529,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                           children: [
                             CircularProgressIndicator(),
                             SizedBox(height: 16),
-                            Text('Generating caption and thumbnail...'),
+                            Text('Generating AI description...'),
                           ],
                         ),
                       ),
@@ -552,7 +559,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                                 ),
                               ),
                               const SizedBox(height: 16),
-                              Text('Caption: ${updatedVideo.caption ?? 'No caption'}'),
+                              Text('Description: ${updatedVideo.description ?? 'No description'}'),
                             ],
                           ),
                           actions: [
@@ -566,7 +573,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                       
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Caption and thumbnail generated successfully!'),
+                          content: Text('AI description generated successfully!'),
                           backgroundColor: Colors.green,
                         ),
                       );
@@ -592,7 +599,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                   }
                 },
                 icon: const Icon(Icons.auto_awesome),
-                label: const Text('Generate AI Caption'),
+                label: const Text('Generate AI Description'),
               ),
             ),
           ],
@@ -607,12 +614,200 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     );
   }
 
+  Future<void> _showProjectSelectionDialog(Video video) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save to Project'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: StreamBuilder<List<Project>>(
+            stream: _projectService.getUserAccessibleProjects(currentUser.uid),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                return Text('Error: ${snapshot.error}');
+              }
+
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              final projects = snapshot.data!;
+              if (projects.isEmpty) {
+                return const Text('No projects found');
+              }
+
+              return ListView.builder(
+                shrinkWrap: true,
+                itemCount: projects.length,
+                itemBuilder: (context, index) {
+                  final project = projects[index];
+                  // Don't show current project
+                  if (project.id == widget.project.id) return const SizedBox.shrink();
+                  
+                  return ListTile(
+                    title: Text(project.name),
+                    subtitle: Text(project.description ?? 'No description'),
+                    onTap: () async {
+                      try {
+                        await _projectService.addVideoToProject(
+                          project.id,
+                          video.id,
+                        );
+                        if (mounted) {
+                          Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Video added to ${project.name}'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Error adding video: ${e.toString()}'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      }
+                    },
+                  );
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVideoCard(Video video) {
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (video.thumbnailUrl != null)
+            Image.network(
+              video.thumbnailUrl!,
+              fit: BoxFit.cover,
+              height: 200,
+              width: double.infinity,
+            ),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  video.title,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                if (video.description != null)
+                  Text(
+                    video.description!,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                Text(
+                  'Duration: ${Duration(seconds: video.duration).toString().split('.').first}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProjectHeader() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.project.name,
+              style: Theme.of(context).textTheme.headlineMedium,
+            ),
+            if (widget.project.description != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: Text(
+                  widget.project.description!,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+              ),
+            // ... rest of the header code ...
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.project.name),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.movie_creation),
+            tooltip: 'Generate AI Video',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => VideoGenerationDialog(
+                  onVideoGenerated: (String videoUrl) async {
+                    // Create a new video entry
+                    try {
+                      final video = await _videoService.createVideoFromUrl(
+                        url: videoUrl,
+                        userId: widget.project.userId,
+                        title: 'AI Generated Video',
+                        duration: 10, // AI videos are limited to 10 seconds
+                      );
+
+                      await _projectService.addVideoToProject(
+                        widget.project.id,
+                        video.id,
+                      );
+
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('AI video added to project successfully'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Error adding AI video: ${e.toString()}'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    }
+                  },
+                ),
+              );
+            },
+          ),
           // Invite button
           IconButton(
             icon: const Icon(Icons.person_add),
@@ -692,16 +887,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  _buildProjectHeader(),
                   Padding(
                     padding: const EdgeInsets.all(16.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          project.description,
-                          style: Theme.of(context).textTheme.bodyLarge,
-                        ),
-                        const SizedBox(height: 24),
                         Text(
                           'Videos (${project.videoIds.length})',
                           style: Theme.of(context).textTheme.titleLarge,
@@ -823,7 +1014,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                                             builder: (context, candidateData, rejectedData) {
                                               return GestureDetector(
                                                 onTap: () => _viewVideos(project.id),
-                                                onLongPress: () => _showVideoMetadataDialog(video),
+                                                onLongPress: () => _showProjectSelectionDialog(video),
                                                 child: Card(
                                                   clipBehavior: Clip.antiAlias,
                                                   child: Stack(

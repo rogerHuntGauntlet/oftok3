@@ -94,8 +94,18 @@ class VideoService {
         .get();
         
     return snapshot.docs
-        .map((doc) => Video.fromJson(doc.data() as Map<String, dynamic>))
+        .map((doc) {
+          try {
+            final data = doc.data();
+            data['id'] = doc.id; // Ensure ID is included
+            return Video.fromJson(data);
+          } catch (e) {
+            print('Error parsing video document ${doc.id}: $e');
+            return null;
+          }
+        })
         .where((video) => video != null)
+        .cast<Video>()
         .toList();
   }
 
@@ -128,15 +138,20 @@ class VideoService {
       final snapshot = await uploadTask.whenComplete(() {});
       final String videoUrl = await snapshot.ref.getDownloadURL();
 
+      // Generate AI caption and tags
+      final aiResponse = await _aiCaptionService.generateAICaption(title);
+
       // Create video document in Firestore
       final videoData = Video(
         id: videoId,
         title: title,
+        description: aiResponse['caption'],
         url: videoUrl,
         userId: userId,
         uploadedAt: DateTime.now(),
         thumbnailUrl: '', // Empty for now
         duration: duration,
+        tags: aiResponse['tags'],
       );
 
       await _firestore
@@ -207,96 +222,55 @@ class VideoService {
     return Video.fromJson(doc.data()!);
   }
 
-  // Generate AI caption and thumbnail for a video
+  // Update video metadata
+  Future<Video> updateVideoMetadata({
+    required String videoId,
+    String? title,
+    String? description,
+    String? thumbnailUrl,
+    List<String>? tags,
+  }) async {
+    final videoDoc = await _firestore.collection('videos').doc(videoId).get();
+    if (!videoDoc.exists) {
+      throw Exception('Video not found');
+    }
+
+    final video = Video.fromJson(videoDoc.data()!);
+    final updatedVideo = video.copyWith(
+      title: title,
+      description: description,
+      thumbnailUrl: thumbnailUrl,
+      tags: tags,
+    );
+
+    await _firestore
+        .collection('videos')
+        .doc(videoId)
+        .update(updatedVideo.toJson());
+
+    return updatedVideo;
+  }
+
+  // Generate AI caption for a video
   Future<Video> generateAICaption(String videoId) async {
-    File? tempFile;
-    String? thumbnailUrl;
-    String? caption;
-    
+    final video = await getVideo(videoId);
+    if (video == null) {
+      throw Exception('Video not found');
+    }
+
     try {
-      // Get the video details
-      final video = await getVideo(videoId);
-      if (video == null) throw Exception('Video not found');
-
-      // Try to generate thumbnail
-      try {
-        print('Attempting to generate thumbnail...');
-        
-        // Create temporary file path for the thumbnail
-        final tempDir = await getTemporaryDirectory();
-        final thumbnailPath = '${tempDir.path}/${videoId}_thumb.jpg';
-        
-        // Use FFmpeg to extract a frame at 1 second mark
-        final result = await FFmpegKit.execute(
-          '-y -i "${video.url}" -ss 00:00:01.000 -vframes 1 -vf "scale=720:-1" -q:v 2 "$thumbnailPath"'
-        );
-
-        if (result.getReturnCode() == 0) {
-          tempFile = File(thumbnailPath);
-          if (await tempFile.exists()) {
-            print('Thumbnail generated at: $thumbnailPath');
-
-            // Upload thumbnail to Firebase Storage
-            print('Uploading thumbnail to Firebase Storage...');
-            final thumbnailRef = _storage.ref().child('thumbnails/$videoId.jpg');
-            await thumbnailRef.putFile(
-              tempFile,
-              SettableMetadata(contentType: 'image/jpeg'),
-            );
-            thumbnailUrl = await thumbnailRef.getDownloadURL();
-            print('Thumbnail uploaded successfully: $thumbnailUrl');
-          }
-        }
-      } catch (e) {
-        print('Error generating/uploading thumbnail: $e');
-        // Continue with caption generation even if thumbnail fails
-      }
-
-      // Generate caption using AI
-      try {
-        print('Generating AI caption...');
-        final prompt = 'Generate a creative caption for a video titled: ${video.title}';
-        caption = await _aiCaptionService.generateAICaption(prompt);
-        print('Caption generated: $caption');
-      } catch (e) {
-        print('Error generating caption: $e');
-        throw Exception('Failed to generate caption: $e');
-      }
-
-      // Update video document with whatever we have (caption and/or thumbnail)
-      print('Updating video document...');
-      final updates = <String, dynamic>{};
-      if (caption != null) updates['caption'] = caption;
-      if (thumbnailUrl != null) updates['thumbnailUrl'] = thumbnailUrl;
+      // Generate caption and tags using AI
+      final aiResponse = await _aiCaptionService.generateAICaption(video.title);
       
-      await _firestore
-          .collection('videos')
-          .doc(videoId)
-          .update(updates);
-
-      // Return updated video object
-      return Video(
-        id: video.id,
-        title: video.title,
-        url: video.url,
-        userId: video.userId,
-        uploadedAt: video.uploadedAt,
-        thumbnailUrl: thumbnailUrl ?? video.thumbnailUrl,
-        duration: video.duration,
-        caption: caption ?? video.caption,
+      // Update video with new caption and tags
+      return await updateVideoMetadata(
+        videoId: videoId,
+        description: aiResponse['caption'],
+        tags: aiResponse['tags'],
       );
     } catch (e) {
-      print('Error in generateAICaption: $e');
-      throw Exception('Failed to generate caption and thumbnail: $e');
-    } finally {
-      // Clean up resources
-      try {
-        if (tempFile != null && await tempFile.exists()) {
-          await tempFile.delete();
-        }
-      } catch (e) {
-        print('Error cleaning up temp file: $e');
-      }
+      print('Error generating AI caption: $e');
+      throw Exception('Failed to generate AI caption: $e');
     }
   }
 
@@ -309,6 +283,98 @@ class VideoService {
           .update({'caption': caption});
     } catch (e) {
       throw Exception('Failed to update video caption: $e');
+    }
+  }
+
+  Future<Video> createVideoFromUrl({
+    required String url,
+    required String userId,
+    required String title,
+    required int duration,
+  }) async {
+    try {
+      // Generate AI caption and tags
+      final aiResponse = await _aiCaptionService.generateAICaption(title);
+
+      final videoDoc = await _firestore.collection('videos').add({
+        'url': url,
+        'userId': userId,
+        'title': title,
+        'description': aiResponse['caption'],
+        'duration': duration,
+        'thumbnailUrl': '', // AI videos might not have thumbnails
+        'uploadedAt': FieldValue.serverTimestamp(),
+        'tags': aiResponse['tags'],
+        'views': 0,
+        'likedBy': [],
+        'isAiGenerated': true,
+      });
+
+      return Video(
+        id: videoDoc.id,
+        url: url,
+        userId: userId,
+        title: title,
+        description: aiResponse['caption'],
+        duration: duration,
+        thumbnailUrl: '',
+        uploadedAt: DateTime.now(),
+        tags: aiResponse['tags'],
+        views: 0,
+        likedBy: [],
+      );
+    } catch (e) {
+      throw Exception('Failed to create video from URL: $e');
+    }
+  }
+
+  // Batch update all existing videos with AI captions and tags
+  Future<void> batchUpdateAllVideosWithAI({
+    Function(int total)? onTotalVideos,
+    Function(int current, int total)? onProgress,
+    Function(String videoId, dynamic error)? onError,
+  }) async {
+    try {
+      // Get all videos
+      final videos = await getAllVideos();
+      final total = videos.length;
+      onTotalVideos?.call(total);
+
+      // Process videos in batches to avoid rate limiting
+      const batchSize = 5;
+      for (var i = 0; i < videos.length; i += batchSize) {
+        final batch = videos.skip(i).take(batchSize);
+        
+        // Process batch concurrently
+        await Future.wait(
+          batch.map((video) async {
+            try {
+              // Skip if video already has both description and tags
+              if (video.description != null && 
+                  video.description!.isNotEmpty && 
+                  video.tags.isNotEmpty) {
+                onProgress?.call(i + 1, total);
+                return;
+              }
+
+              // Generate new caption and tags
+              await generateAICaption(video.id);
+              onProgress?.call(i + 1, total);
+            } catch (e) {
+              print('Error processing video ${video.id}: $e');
+              onError?.call(video.id, e);
+            }
+          }),
+        );
+
+        // Add a small delay between batches to avoid rate limiting
+        if (i + batchSize < videos.length) {
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
+    } catch (e) {
+      print('Error in batch update: $e');
+      throw Exception('Failed to batch update videos: $e');
     }
   }
 } 

@@ -2,36 +2,39 @@ import 'package:flutter/material.dart';
 
 class VideoThumbnail extends StatelessWidget {
   final String videoUrl;
-  final String thumbnailUrl;
+  final String? thumbnailUrl;
 
   const VideoThumbnail({
     super.key,
     required this.videoUrl,
-    required this.thumbnailUrl,
+    this.thumbnailUrl,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (thumbnailUrl.isEmpty) {
-      return Container(
-        color: Colors.grey[300],
+    if (thumbnailUrl != null) {
+      return Image.network(
+        thumbnailUrl!,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return _buildPlaceholder();
+        },
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return _buildPlaceholder(showLoading: true);
+        },
       );
     }
+    return _buildPlaceholder();
+  }
 
-    return Image.network(
-      thumbnailUrl,
-      fit: BoxFit.cover,
-      loadingBuilder: (context, child, loadingProgress) {
-        if (loadingProgress == null) return child;
-        return Container(
-          color: Colors.grey[300],
-          child: const Center(
-            child: CircularProgressIndicator(),
-          ),
-        );
-      },
-      errorBuilder: (context, error, stackTrace) => Container(
-        color: Colors.grey[300],
+  Widget _buildPlaceholder({bool showLoading = false}) {
+    return Container(
+      color: Colors.grey[200],
+      child: Center(
+        child: showLoading
+            ? const CircularProgressIndicator()
+            : const Icon(Icons.video_library, size: 48, color: Colors.grey),
       ),
     );
   }

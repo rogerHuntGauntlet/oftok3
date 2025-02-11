@@ -18,6 +18,30 @@ service cloud.firestore {
       );
     }
 
+    function isNotificationOwner(notificationData) {
+      return isSignedIn() && notificationData.userId == request.auth.uid;
+    }
+
+    // Notifications collection rules
+    match /notifications/{notificationId} {
+      // Allow reading only user's own notifications
+      allow read: if isNotificationOwner(resource.data);
+      
+      // Allow creating notifications if signed in and data is valid
+      allow create: if isSignedIn() 
+        && request.resource.data.userId is string
+        && request.resource.data.title is string
+        && request.resource.data.message is string
+        && request.resource.data.createdAt is timestamp;
+      
+      // Allow updating only isRead field for user's own notifications
+      allow update: if isNotificationOwner(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+      
+      // Allow deleting only user's own notifications
+      allow delete: if isNotificationOwner(resource.data);
+    }
+
     // Comments collection rules
     match /comments/{commentId} {
       // Allow reading comments by anyone

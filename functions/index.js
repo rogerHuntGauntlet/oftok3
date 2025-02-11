@@ -11,6 +11,7 @@ const {onRequest} = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
+const { generateVideo } = require('./src/videoGeneration');
 
 // Initialize with service account
 const serviceAccount = require('./service-account.json');
@@ -73,3 +74,55 @@ exports.listAllUsers = functions.https.onRequest(async (req, res) => {
     res.status(500).json({ error: 'Failed to list users' });
   }
 });
+
+// Verify App Check token with enhanced error handling
+const verifyAppCheck = async (context) => {
+  if (!context.app) {
+    console.error('App Check verification failed: No app context');
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'This app is not authorized to access Firebase services. ' +
+      'Please ensure you are using an official version of the app.'
+    );
+  }
+  
+  // Log successful verification
+  console.log('App Check verification successful for app:', context.app.appId);
+};
+
+exports.generateVideo = functions
+  .runWith({
+    timeoutSeconds: 300,    // 5 minute timeout
+    memory: '2GB',
+    enforceAppCheck: false  // Disable App Check enforcement
+  })
+  .https.onCall(async (data, context) => {
+    try {
+      // Check if request is authenticated
+      if (!context.auth) {
+        throw new functions.https.HttpsError(
+          'unauthenticated',
+          'The function must be called while authenticated.'
+        );
+      }
+
+      console.log('Processing video generation request for user:', context.auth.uid);
+      
+      // Call your video generation logic
+      const result = await generateVideo(data.prompt);
+      
+      console.log('Video generation successful');
+      return {
+        success: true,
+        videoUrl: result.videoUrl,
+        remainingToday: result.remainingGenerations
+      };
+      
+    } catch (error) {
+      console.error('Error in generateVideo:', error);
+      throw new functions.https.HttpsError(
+        'internal',
+        'An error occurred while generating the video. Please try again later.'
+      );
+    }
+  });
