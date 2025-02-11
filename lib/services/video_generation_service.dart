@@ -1,100 +1,91 @@
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_functions/cloud_functions.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import './user_service.dart';
 import './app_check_service.dart';
 
 class VideoGenerationService {
-  static const int tokensPerGeneration = 250;
+  static const String _baseUrl = 'https://oftok3.onrender.com'; // Updated to Render deployment URL
   static const int _maxRetryAttempts = 3;
   static const Duration _initialRetryDelay = Duration(seconds: 2);
   
-  final UserService _userService = UserService();
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFunctions _functions = FirebaseFunctions.instance;
-  final AppCheckService _appCheckService = AppCheckService();
+  final UserService? _userService;
+  final AppCheckService? _appCheckService;
+
+  VideoGenerationService({UserService? userService, AppCheckService? appCheckService})
+      : _userService = userService,
+        _appCheckService = appCheckService;
+
+  // Test server connection
+  Future<bool> testConnection() async {
+    try {
+      print('Testing connection to $_baseUrl');
+      final response = await http.get(Uri.parse(_baseUrl));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        print('Server response: $data');
+        return data['status'] == 'ok';
+      }
+      
+      print('Server returned status code: ${response.statusCode}');
+      return false;
+    } catch (e) {
+      print('Connection test failed: $e');
+      return false;
+    }
+  }
 
   Future<Map<String, dynamic>> generateVideo(String prompt) async {
-    final user = _auth.currentUser;
-
-    if (user == null) {
-      throw Exception('User must be authenticated to generate videos');
+    // First test the connection
+    final isConnected = await testConnection();
+    if (!isConnected) {
+      throw Exception('Could not connect to video generation server');
     }
 
     try {
-      // First ensure user exists in database with tokens
-      final currentUser = await _userService.getCurrentUser();
-      if (currentUser == null) {
-        // Create user if they don't exist
-        await _userService.createOrUpdateUser(user);
-        print('Created new user with initial tokens');
-      }
-
-      // Now check if user has enough tokens
-      final hasTokens = await _userService.hasEnoughTokens(user.uid, tokensPerGeneration);
-      if (!hasTokens) {
-        throw Exception('Insufficient tokens. You need $tokensPerGeneration tokens to generate a video.');
-      }
-
       print('Starting video generation with prompt: $prompt');
       
-      // Implement retry logic for token refresh and function call
+      // Implement retry logic
       int retryCount = 0;
       Exception? lastError;
 
       while (retryCount < _maxRetryAttempts) {
         try {
-          // Get fresh ID token
-          final idToken = await user.getIdToken(true);
-          print('Got fresh ID token'); // Debug print
-
-          // Get fresh App Check token
-          final appCheckToken = await _appCheckService.getToken(forceRefresh: retryCount > 0);
-          if (appCheckToken == null) {
-            throw Exception('Failed to obtain App Check token');
-          }
-          print('Got fresh App Check token'); // Debug print
-          
-          // Call the Cloud Function with a longer timeout
-          final HttpsCallable callable = _functions.httpsCallable(
-            'generateVideo',
-            options: HttpsCallableOptions(
-              timeout: const Duration(minutes: 5),
-            ),
+          final response = await http.post(
+            Uri.parse('$_baseUrl/generate-video'),
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'prompt': prompt,
+            }),
           );
-          final result = await callable.call({
-            'prompt': prompt
-          });
 
-          final data = result.data as Map<String, dynamic>;
-          
-          if (!data['success']) {
-            throw Exception('Video generation failed: ${data['error']}');
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body) as Map<String, dynamic>;
+            
+            if (!data['success']) {
+              throw Exception('Video generation failed: ${data['error']}');
+            }
+
+            return {
+              'success': true,
+              'videoUrl': data['videoUrl'],
+            };
+          } else {
+            throw Exception('Server error: ${response.statusCode}');
           }
-
-          return {
-            'success': true,
-            'videoUrl': data['videoUrl'],
-            'tokensDeducted': data['tokensDeducted'],
-            'remainingTokens': data['remainingTokens']
-          };
         } catch (e) {
           lastError = e is Exception ? e : Exception(e.toString());
           print('Attempt ${retryCount + 1} failed: $e');
           
-          // Check if we should retry
-          if (e.toString().contains('App Check') || 
-              e.toString().contains('Authentication required') ||
-              e.toString().contains('Too many attempts')) {
-            retryCount++;
-            if (retryCount < _maxRetryAttempts) {
-              final delay = _initialRetryDelay * (1 << retryCount);
-              print('Retrying in ${delay.inSeconds} seconds...');
-              await Future.delayed(delay);
-              continue;
-            }
-          } else {
-            // For other errors, don't retry
-            rethrow;
+          retryCount++;
+          if (retryCount < _maxRetryAttempts) {
+            final delay = _initialRetryDelay * (1 << retryCount);
+            print('Retrying in ${delay.inSeconds} seconds...');
+            await Future.delayed(delay);
+            continue;
           }
         }
       }

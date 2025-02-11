@@ -11,6 +11,8 @@ class Project {
   final List<String> collaboratorIds;
   final List<String> favoritedBy;
   final int score;
+  final int likeCount;
+  final int commentCount;
 
   Project({
     required this.id,
@@ -23,11 +25,15 @@ class Project {
     List<String>? collaboratorIds,
     List<String>? favoritedBy,
     int? score,
+    int? likeCount,
+    int? commentCount,
   })  : videoIds = videoIds ?? [],
         isPublic = isPublic ?? false,
         collaboratorIds = collaboratorIds ?? [],
         favoritedBy = favoritedBy ?? [],
-        score = score ?? 0;
+        score = score ?? 0,
+        likeCount = likeCount ?? 0,
+        commentCount = commentCount ?? 0;
 
   Map<String, dynamic> toJson() {
     return {
@@ -41,6 +47,8 @@ class Project {
       'collaboratorIds': collaboratorIds,
       'favoritedBy': favoritedBy,
       'score': score,
+      'likeCount': likeCount,
+      'commentCount': commentCount,
     };
   }
 
@@ -58,6 +66,8 @@ class Project {
       collaboratorIds: List<String>.from(json['collaboratorIds'] ?? []),
       favoritedBy: List<String>.from(json['favoritedBy'] ?? []),
       score: json['score'] as int? ?? 0,
+      likeCount: json['likeCount'] as int? ?? 0,
+      commentCount: json['commentCount'] as int? ?? 0,
     );
   }
 
@@ -72,6 +82,8 @@ class Project {
     List<String>? collaboratorIds,
     List<String>? favoritedBy,
     int? score,
+    int? likeCount,
+    int? commentCount,
   }) {
     return Project(
       id: id ?? this.id,
@@ -84,6 +96,8 @@ class Project {
       collaboratorIds: collaboratorIds ?? this.collaboratorIds,
       favoritedBy: favoritedBy ?? this.favoritedBy,
       score: score ?? this.score,
+      likeCount: likeCount ?? this.likeCount,
+      commentCount: commentCount ?? this.commentCount,
     );
   }
 

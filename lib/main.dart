@@ -12,6 +12,7 @@ import 'screens/project_network_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'widgets/app_bottom_navigation.dart';
 import 'services/app_check_service.dart';
+import 'screens/splash_screen.dart';
 
 void main() async {
   // Ensure Flutter bindings are initialized
@@ -38,8 +39,15 @@ void main() async {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  bool _showSplash = true;
 
   @override
   Widget build(BuildContext context) {
@@ -60,24 +68,32 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(
-              body: Center(
-                child: CircularProgressIndicator(),
-              ),
-            );
-          }
+      home: _showSplash
+          ? SplashScreen(
+              onComplete: () {
+                setState(() {
+                  _showSplash = false;
+                });
+              },
+            )
+          : StreamBuilder<User?>(
+              stream: FirebaseAuth.instance.authStateChanges(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Scaffold(
+                    body: Center(
+                      child: CircularProgressIndicator(),
+                    ),
+                  );
+                }
 
-          if (snapshot.hasData) {
-            return const MainNavigationScreen();
-          }
+                if (snapshot.hasData) {
+                  return const MainNavigationScreen();
+                }
 
-          return const LoginScreen();
-        },
-      ),
+                return const LoginScreen();
+              },
+            ),
     );
   }
 }
