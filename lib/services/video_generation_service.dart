@@ -17,11 +17,28 @@ class VideoGenerationException implements Exception {
   final String message;
   final String? code;
   final dynamic details;
+  final int? statusCode;
+  final String? responseBody;
 
-  VideoGenerationException(this.message, {this.code, this.details});
+  VideoGenerationException(
+    this.message, {
+    this.code,
+    this.details,
+    this.statusCode,
+    this.responseBody,
+  });
 
   @override
-  String toString() => 'VideoGenerationException: $message${code != null ? ' (Code: $code)' : ''}';
+  String toString() {
+    final parts = <String>[
+      'VideoGenerationException: $message',
+      if (code != null) '(Code: $code)',
+      if (statusCode != null) '[Status: $statusCode]',
+      if (responseBody != null) '\nResponse: $responseBody',
+      if (details != null) '\nDetails: $details',
+    ];
+    return parts.join(' ');
+  }
 }
 
 class VideoGenerationService {
@@ -38,7 +55,7 @@ class VideoGenerationService {
       : _userService = userService,
         _appCheckService = appCheckService;
 
-  // Test server connection with retry logic
+  // Test server connection with retry logic and detailed error reporting
   Future<bool> testConnection() async {
     int attempts = 0;
     while (attempts < _maxRetryAttempts) {
@@ -47,13 +64,15 @@ class VideoGenerationService {
         final response = await http.get(Uri.parse(_baseUrl))
             .timeout(const Duration(seconds: 10));
         
+        print('Response status code: ${response.statusCode}');
+        print('Response body: ${response.body}');
+        
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
           print('Server response: $data');
           return true;
         }
         
-        print('Server returned status code: ${response.statusCode}');
         attempts++;
         if (attempts < _maxRetryAttempts) {
           await Future.delayed(_initialRetryDelay * (1 << attempts));
@@ -94,6 +113,9 @@ class VideoGenerationService {
             }),
           ).timeout(const Duration(seconds: 30));
 
+          print('Generation request status code: ${response.statusCode}');
+          print('Generation request response: ${response.body}');
+
           if (response.statusCode == 200) {
             final data = jsonDecode(response.body) as Map<String, dynamic>;
             
@@ -101,22 +123,43 @@ class VideoGenerationService {
               throw VideoGenerationException(
                 'Failed to start video generation',
                 code: 'START_FAILED',
-                details: data['error']
+                details: data['error'],
+                statusCode: response.statusCode,
+                responseBody: response.body
               );
             }
 
             predictionId = data['id'];
           } else {
+            String errorMessage = 'Server error';
+            Map<String, dynamic>? errorData;
+            
+            try {
+              errorData = jsonDecode(response.body) as Map<String, dynamic>;
+              errorMessage = errorData['error'] ?? errorMessage;
+            } catch (e) {
+              print('Failed to parse error response: $e');
+            }
+
             throw VideoGenerationException(
-              'Server error',
+              errorMessage,
               code: 'HTTP_ERROR',
-              details: response.statusCode
+              details: errorData ?? response.body,
+              statusCode: response.statusCode,
+              responseBody: response.body
             );
           }
         } catch (e) {
           attempts++;
+          final error = e is VideoGenerationException ? e : VideoGenerationException(
+            'Request failed',
+            code: 'REQUEST_ERROR',
+            details: e.toString()
+          );
+          
           if (attempts < _maxRetryAttempts) {
-            onError?.call('Generation attempt failed, retrying...');
+            onError?.call('Generation attempt failed (${error.code}), retrying...');
+            print('Error details: $error');
             await Future.delayed(_initialRetryDelay * (1 << attempts));
           } else {
             rethrow;
@@ -142,11 +185,16 @@ class VideoGenerationService {
             Uri.parse('$_baseUrl?id=$predictionId'),
           ).timeout(const Duration(seconds: 10));
 
+          print('Status check response code: ${statusResponse.statusCode}');
+          print('Status check response: ${statusResponse.body}');
+
           if (statusResponse.statusCode != 200) {
             throw VideoGenerationException(
               'Failed to check video status',
               code: 'STATUS_CHECK_FAILED',
-              details: statusResponse.statusCode
+              details: statusResponse.statusCode,
+              statusCode: statusResponse.statusCode,
+              responseBody: statusResponse.body
             );
           }
 
@@ -156,7 +204,9 @@ class VideoGenerationService {
             throw VideoGenerationException(
               'Video generation failed',
               code: 'GENERATION_FAILED',
-              details: statusData['error']
+              details: statusData['error'],
+              statusCode: statusResponse.statusCode,
+              responseBody: statusResponse.body
             );
           }
 
@@ -186,13 +236,16 @@ class VideoGenerationService {
             throw VideoGenerationException(
               'Video generation failed',
               code: 'GENERATION_FAILED',
-              details: statusData['error']
+              details: statusData['error'],
+              statusCode: statusResponse.statusCode,
+              responseBody: statusResponse.body
             );
           }
         } catch (e) {
           // Only retry on network errors, not on generation failures
           if (e is! VideoGenerationException) {
             onError?.call('Status check failed, retrying...');
+            print('Status check error: $e');
             await Future.delayed(const Duration(seconds: 1));
             continue;
           }
