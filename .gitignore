@@ -56,3 +56,4 @@ service-account.json
 
 # Local development
 *.local
+.vercel

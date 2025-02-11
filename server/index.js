@@ -26,13 +26,24 @@ app.post('/render', async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    const output = await replicate.run("luma/ray", { 
-      input: { prompt }
+    // Start the prediction
+    const prediction = await replicate.predictions.create({
+      version: "luma/ray",
+      input: {
+        prompt: prompt
+      }
     });
+
+    // Wait for the prediction to complete
+    const result = await replicate.predictions.wait(prediction.id);
+
+    if (result.error) {
+      throw new Error(`Video generation failed: ${result.error}`);
+    }
 
     res.json({
       success: true,
-      videoUrl: output
+      videoUrl: result.output
     });
 
   } catch (error) {

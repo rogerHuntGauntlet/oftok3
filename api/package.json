@@ -1,0 +1,9 @@
+{
+  "name": "ohftok-video-api",
+  "version": "1.0.0",
+  "description": "Video generation API for OHFtok",
+  "main": "render.js",
+  "dependencies": {
+    "replicate": "^0.25.2"
+  }
+} 
