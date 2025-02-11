@@ -55,14 +55,21 @@ class VideoGenerationService {
       : _userService = userService,
         _appCheckService = appCheckService;
 
+  Map<String, String> get _headers => {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ${dotenv.env['REPLICATE_API_TOKEN']}',
+  };
+
   // Test server connection with retry logic and detailed error reporting
   Future<bool> testConnection() async {
     int attempts = 0;
     while (attempts < _maxRetryAttempts) {
       try {
         print('Testing connection to $_baseUrl (Attempt ${attempts + 1})');
-        final response = await http.get(Uri.parse(_baseUrl))
-            .timeout(const Duration(seconds: 10));
+        final response = await http.get(
+          Uri.parse(_baseUrl),
+          headers: _headers,
+        ).timeout(const Duration(seconds: 10));
         
         print('Response status code: ${response.statusCode}');
         print('Response body: ${response.body}');
@@ -97,6 +104,16 @@ class VideoGenerationService {
       print('Starting video generation with prompt: $prompt');
       onProgress?.call(VideoGenerationStatus.starting, 0.0);
       
+      // Check if we have the API token
+      final apiToken = dotenv.env['REPLICATE_API_TOKEN'];
+      if (apiToken == null || apiToken.isEmpty) {
+        throw VideoGenerationException(
+          'Missing Replicate API token',
+          code: 'MISSING_API_TOKEN',
+          details: 'REPLICATE_API_TOKEN environment variable is not set'
+        );
+      }
+      
       // Step 1: Start the video generation with retry logic
       String? predictionId;
       int attempts = 0;
@@ -105,9 +122,7 @@ class VideoGenerationService {
         try {
           final response = await http.post(
             Uri.parse(_baseUrl),
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers: _headers,
             body: jsonEncode({
               'prompt': prompt,
             }),
@@ -130,6 +145,14 @@ class VideoGenerationService {
             }
 
             predictionId = data['id'];
+          } else if (response.statusCode == 401) {
+            throw VideoGenerationException(
+              'Authentication failed',
+              code: 'AUTH_ERROR',
+              details: 'Invalid or missing API token',
+              statusCode: response.statusCode,
+              responseBody: response.body
+            );
           } else {
             String errorMessage = 'Server error';
             Map<String, dynamic>? errorData;
@@ -183,6 +206,7 @@ class VideoGenerationService {
         try {
           final statusResponse = await http.get(
             Uri.parse('$_baseUrl?id=$predictionId'),
+            headers: _headers,
           ).timeout(const Duration(seconds: 10));
 
           print('Status check response code: ${statusResponse.statusCode}');
