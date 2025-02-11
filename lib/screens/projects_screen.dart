@@ -7,12 +7,10 @@ import 'project_details_screen.dart';
 import 'project_connections_screen.dart';
 import 'project_network_screen.dart';
 import 'login_screen.dart';
+import '../widgets/app_bottom_navigation.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'dart:async';
-import 'dart:math' as math;
 import 'package:permission_handler/permission_handler.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:simple_animations/simple_animations.dart';
 
 class ProjectsScreen extends StatefulWidget {
   final VideoPreloadService? preloadService;
@@ -26,7 +24,7 @@ class ProjectsScreen extends StatefulWidget {
   State<ProjectsScreen> createState() => _ProjectsScreenState();
 }
 
-class _ProjectsScreenState extends State<ProjectsScreen> with TickerProviderStateMixin {
+class _ProjectsScreenState extends State<ProjectsScreen> with SingleTickerProviderStateMixin {
   final _projectService = ProjectService();
   final _auth = FirebaseAuth.instance;
   late TabController _tabController;
@@ -35,22 +33,10 @@ class _ProjectsScreenState extends State<ProjectsScreen> with TickerProviderStat
   String _myProjectsSearchQuery = '';
   String _findProjectsSearchQuery = '';
 
-  // Animation controllers
-  late AnimationController _backgroundAnimationController;
-  late Animation<double> _backgroundAnimation;
-
-  // Psychedelic gradient colors (more subtle)
-  final List<Color> _gradientColors = [
-    const Color(0xFF9C27B0).withOpacity(0.6), // Purple
-    const Color(0xFF673AB7).withOpacity(0.6), // Deep Purple
-    const Color(0xFF3F51B5).withOpacity(0.6), // Indigo
-    const Color(0xFF2196F3).withOpacity(0.6), // Blue
-  ];
-
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _myProjectsSearchController.addListener(() {
       setState(() {
         _myProjectsSearchQuery = _myProjectsSearchController.text;
@@ -61,22 +47,10 @@ class _ProjectsScreenState extends State<ProjectsScreen> with TickerProviderStat
         _findProjectsSearchQuery = _findProjectsSearchController.text;
       });
     });
-
-    // Initialize background animation with slower speed
-    _backgroundAnimationController = AnimationController(
-      duration: const Duration(seconds: 20), // Slower animation
-      vsync: this,
-    )..repeat();
-
-    _backgroundAnimation = CurvedAnimation(
-      parent: _backgroundAnimationController,
-      curve: Curves.easeInOut,
-    );
   }
 
   @override
   void dispose() {
-    _backgroundAnimationController.dispose();
     _tabController.dispose();
     _myProjectsSearchController.dispose();
     _findProjectsSearchController.dispose();
@@ -119,35 +93,19 @@ class _ProjectsScreenState extends State<ProjectsScreen> with TickerProviderStat
   }
 
   Widget _buildSearchBar(TextEditingController controller, String hintText) {
-    return Container(
-      margin: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(25),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.purple.withOpacity(0.3),
-            blurRadius: 15,
-            spreadRadius: 2,
-          ),
-        ],
-      ),
+    return Padding(
+      padding: const EdgeInsets.all(8.0),
       child: TextField(
         controller: controller,
-        style: GoogleFonts.spaceMono(
-          color: Colors.white,
-          fontSize: 16,
-        ),
         decoration: InputDecoration(
           hintText: hintText,
-          hintStyle: TextStyle(color: Colors.white70),
-          prefixIcon: Icon(Icons.search, color: Colors.white70),
+          prefixIcon: const Icon(Icons.search),
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(25),
-            borderSide: BorderSide.none,
+            borderRadius: BorderRadius.circular(10),
           ),
           filled: true,
-          fillColor: Colors.black87.withOpacity(0.7),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          fillColor: Colors.white,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         ),
       ),
     );
@@ -166,393 +124,179 @@ class _ProjectsScreenState extends State<ProjectsScreen> with TickerProviderStat
     }
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: PreferredSize(
-        preferredSize: Size.fromHeight(120),
-        child: AppBar(
-          elevation: 0,
-          flexibleSpace: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.black87.withOpacity(0.7),
-                  Colors.black54.withOpacity(0.5),
-                ],
-              ),
-            ),
+      appBar: AppBar(
+        title: const Text('Projects'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.trending_up),
+            tooltip: 'Popular Projects',
+            onPressed: _showConnections,
           ),
-          backgroundColor: Colors.transparent,
-          title: Text(
-            'Projects',
-            style: GoogleFonts.righteous(
-              fontSize: 28,
-              color: Colors.white,
-              shadows: [
-                Shadow(
-                  color: Colors.purple.withOpacity(0.5),
-                  blurRadius: 10,
-                  offset: const Offset(2, 2),
-                ),
-              ],
-            ),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: _logout,
           ),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.trending_up, color: Colors.white),
-              tooltip: 'Popular Projects',
-              onPressed: _showConnections,
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(
+              icon: Icon(Icons.folder),
+              text: 'My Projects',
             ),
-            IconButton(
-              icon: const Icon(Icons.logout, color: Colors.white),
-              onPressed: _logout,
-            ),
+            Tab(
+              icon: Icon(Icons.search),
+              text: 'Find Projects',
+            )
           ],
-          bottom: TabBar(
-            controller: _tabController,
-            indicatorColor: Colors.white,
-            indicatorWeight: 3,
-            tabs: [
-              Tab(
-                icon: Icon(Icons.folder, color: Colors.white),
-                child: Text(
-                  'My Projects',
-                  style: GoogleFonts.spaceMono(color: Colors.white),
-                ),
-              ),
-              Tab(
-                icon: Icon(Icons.search, color: Colors.white),
-                child: Text(
-                  'Find Projects',
-                  style: GoogleFonts.spaceMono(color: Colors.white),
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          // My Projects Tab
+          Column(
+            children: [
+              _buildSearchBar(_myProjectsSearchController, 'Search my projects...'),
+              Expanded(
+                child: StreamBuilder<List<Project>>(
+                  stream: _myProjectsSearchQuery.isEmpty
+                      ? _projectService.getUserAccessibleProjects(user.uid)
+                      : _projectService.searchUserAccessibleProjects(user.uid, _myProjectsSearchQuery),
+                  builder: (context, snapshot) {
+                    if (snapshot.hasError) {
+                      print('ProjectsScreen error: ${snapshot.error}');
+                      if (snapshot.error.toString().contains('permission-denied')) {
+                        return _buildErrorView(
+                          'Access Denied',
+                          'You don\'t have permission to view these projects.',
+                        );
+                      }
+                      return _buildErrorView(
+                        'Error',
+                        'Error loading projects: ${snapshot.error}',
+                      );
+                    }
+
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return _buildLoadingView();
+                    }
+
+                    final projects = snapshot.data ?? [];
+                    if (projects.isEmpty) {
+                      return _buildEmptyView();
+                    }
+
+                    return _buildProjectList(projects);
+                  },
                 ),
               ),
             ],
           ),
-        ),
-      ),
-      body: Stack(
-        children: [
-          // Animated background
-          AnimatedBuilder(
-            animation: _backgroundAnimation,
-            builder: (context, _) {
-              return Container(
-                width: MediaQuery.of(context).size.width,
-                height: MediaQuery.of(context).size.height,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment(
-                      math.sin(_backgroundAnimation.value * math.pi * 2) * 0.2,
-                      math.cos(_backgroundAnimation.value * math.pi * 2) * 0.2,
-                    ),
-                    end: Alignment(
-                      -math.sin(_backgroundAnimation.value * math.pi * 2) * 0.2,
-                      -math.cos(_backgroundAnimation.value * math.pi * 2) * 0.2,
-                    ),
-                    colors: _gradientColors,
-                    stops: const [0.0, 0.3, 0.6, 1.0],
-                  ),
-                ),
-              );
-            },
-          ),
-          // Content
-          SafeArea(
-            child: Padding(
-              padding: EdgeInsets.zero,
-              child: TabBarView(
-                controller: _tabController,
-                children: [
-                  // My Projects Tab
-                  Column(
-                    children: [
-                      _buildSearchBar(_myProjectsSearchController, 'Search my projects...'),
-                      Expanded(
-                        child: StreamBuilder<List<Project>>(
-                          stream: _myProjectsSearchQuery.isEmpty
-                              ? _projectService.getUserAccessibleProjects(user.uid)
-                              : _projectService.searchUserAccessibleProjects(user.uid, _myProjectsSearchQuery),
-                          builder: (context, snapshot) {
-                            if (snapshot.hasError) {
-                              return _buildErrorView(
-                                'Error',
-                                'Error loading projects: ${snapshot.error}',
-                              );
-                            }
+          // Find Projects Tab
+          Column(
+            children: [
+              _buildSearchBar(_findProjectsSearchController, 'Search public projects...'),
+              Expanded(
+                child: StreamBuilder<List<Project>>(
+                  stream: _findProjectsSearchQuery.isEmpty
+                      ? _projectService.getPublicProjects()
+                      : _projectService.searchPublicProjects(_findProjectsSearchQuery),
+                  builder: (context, snapshot) {
+                    if (snapshot.hasError) {
+                      return _buildErrorView(
+                        'Error',
+                        'Error loading public projects: ${snapshot.error}',
+                      );
+                    }
 
-                            if (snapshot.connectionState == ConnectionState.waiting) {
-                              return _buildLoadingView();
-                            }
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return _buildLoadingView();
+                    }
 
-                            final projects = snapshot.data ?? [];
-                            if (projects.isEmpty) {
-                              return _buildEmptyView();
-                            }
-
-                            return _buildProjectList(projects);
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                  // Find Projects Tab
-                  Column(
-                    children: [
-                      _buildSearchBar(_findProjectsSearchController, 'Search public projects...'),
-                      Expanded(
-                        child: StreamBuilder<List<Project>>(
-                          stream: _findProjectsSearchQuery.isEmpty
-                              ? _projectService.getPublicProjects()
-                              : _projectService.searchPublicProjects(_findProjectsSearchQuery),
-                          builder: (context, snapshot) {
-                            if (snapshot.hasError) {
-                              return _buildErrorView(
-                                'Error',
-                                'Error loading public projects: ${snapshot.error}',
-                              );
-                            }
-
-                            if (snapshot.connectionState == ConnectionState.waiting) {
-                              return _buildLoadingView();
-                            }
-
-                            final projects = snapshot.data ?? [];
-                            if (projects.isEmpty) {
-                              return _buildEmptyView();
-                            }
-
-                            return _buildProjectList(projects);
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: _buildFloatingActionButton(),
-    );
-  }
-
-  Widget _buildFloatingActionButton() {
-    return AnimatedBuilder(
-      animation: _backgroundAnimation,
-      builder: (context, child) {
-        return Transform.translate(
-          offset: Offset(
-            5 * math.sin(_backgroundAnimation.value * 2 * math.pi),
-            5 * math.cos(_backgroundAnimation.value * 2 * math.pi),
-          ),
-          child: FloatingActionButton(
-            onPressed: _createProject,
-            backgroundColor: Colors.transparent,
-            child: Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  colors: [
-                    Colors.purple,
-                    Colors.deepPurple,
-                    Colors.blue,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.purple.withOpacity(0.5),
-                    blurRadius: 15,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: const Icon(
-                Icons.add,
-                color: Colors.white,
-                size: 32,
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildProjectList(List<Project> projects) {
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      itemCount: projects.length,
-      itemBuilder: (context, index) {
-        final project = projects[index];
-        return Hero(
-          tag: 'project-${project.id}',
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 16),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              gradient: LinearGradient(
-                colors: [
-                  Colors.black87.withOpacity(0.7),
-                  Colors.black54.withOpacity(0.5),
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.purple.withOpacity(0.2),
-                  blurRadius: 10,
-                  spreadRadius: 2,
-                ),
-              ],
-            ),
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(20),
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => ProjectDetailsScreen(
-                        project: project,
-                        preloadService: widget.preloadService,
-                      ),
-                    ),
-                  );
-                },
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(
-                            project.isPublic ? Icons.public : Icons.lock_outline,
-                            color: project.isPublic ? Colors.green : Colors.grey,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              project.name,
-                              style: GoogleFonts.righteous(
+                    final projects = snapshot.data ?? [];
+                    if (projects.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.search_off,
+                              size: 64,
+                              color: Colors.grey,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              _findProjectsSearchQuery.isEmpty
+                                  ? 'No public projects found'
+                                  : 'No projects match your search',
+                              style: const TextStyle(
                                 fontSize: 20,
-                                color: Colors.white,
+                                color: Colors.grey,
                               ),
                             ),
-                          ),
-                          if (project.userId == _auth.currentUser?.uid)
-                            const Icon(Icons.edit, color: Colors.blue)
-                          else
-                            const Icon(Icons.visibility, color: Colors.grey),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        project.description ?? 'No description',
-                        style: GoogleFonts.spaceMono(
-                          color: Colors.white70,
-                          fontSize: 14,
+                          ],
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.purple.withOpacity(0.3),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          '${project.videoIds.length} videos',
-                          style: GoogleFonts.spaceMono(
-                            color: Colors.white,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                      );
+                    }
+
+                    return _buildProjectList(projects);
+                  },
                 ),
               ),
-            ),
+            ],
           ),
-        );
-      },
+         
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _createProject,
+        child: const Icon(Icons.add),
+      ),
+      bottomNavigationBar: AppBottomNavigation(currentIndex: 0),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
     );
   }
 
   Widget _buildErrorView(String title, String message) {
     return Center(
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Colors.black87.withOpacity(0.7),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline, size: 48, color: Colors.red),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              style: GoogleFonts.righteous(
-                fontSize: 24,
-                color: Colors.white,
-              ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline, size: 48, color: Colors.red),
+          const SizedBox(height: 16),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.red,
             ),
-            const SizedBox(height: 8),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: GoogleFonts.spaceMono(
-                color: Colors.white70,
-              ),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: () => setState(() {}),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.purple,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(15),
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh),
+            label: const Text('Retry'),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildLoadingView() {
-    return Center(
+    return const Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const CircularProgressIndicator(
-            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Loading projects...',
-            style: GoogleFonts.spaceMono(
-              color: Colors.white,
-              fontSize: 16,
-            ),
-          ),
+          CircularProgressIndicator(),
+          SizedBox(height: 16),
+          Text('Loading projects...'),
         ],
       ),
     );
@@ -560,45 +304,75 @@ class _ProjectsScreenState extends State<ProjectsScreen> with TickerProviderStat
 
   Widget _buildEmptyView() {
     return Center(
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Colors.black87.withOpacity(0.7),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.video_library_outlined,
-              size: 64,
-              color: Colors.white70,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.video_library_outlined,
+            size: 64,
+            color: Colors.grey,
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'No projects yet',
+            style: TextStyle(
+              fontSize: 20,
+              color: Colors.grey,
             ),
-            const SizedBox(height: 16),
-            Text(
-              'No projects yet',
-              style: GoogleFonts.righteous(
-                fontSize: 24,
-                color: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _createProject,
-              icon: const Icon(Icons.add),
-              label: const Text('Create Your First Project'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.purple,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(15),
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _createProject,
+            icon: const Icon(Icons.add),
+            label: const Text('Create Your First Project'),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _buildProjectList(List<Project> projects) {
+    return ListView.builder(
+      padding: const EdgeInsets.all(8),
+      itemCount: projects.length,
+      itemBuilder: (context, index) {
+        final project = projects[index];
+        return Card(
+          child: ListTile(
+            leading: Icon(
+              project.isPublic ? Icons.public : Icons.lock_outline,
+              color: project.isPublic ? Colors.green : Colors.grey,
+            ),
+            title: Text(project.name),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(project.description ?? 'No description'),
+                const SizedBox(height: 4),
+                Text(
+                  '${project.videoIds.length} videos',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+            isThreeLine: true,
+            trailing: project.userId == _auth.currentUser?.uid
+              ? const Icon(Icons.edit, color: Colors.blue)
+              : const Icon(Icons.visibility, color: Colors.grey),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ProjectDetailsScreen(
+                    project: project,
+                    preloadService: widget.preloadService,
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }
@@ -608,7 +382,7 @@ class _CreateProjectDialog extends StatefulWidget {
   State<_CreateProjectDialog> createState() => _CreateProjectDialogState();
 }
 
-class _CreateProjectDialogState extends State<_CreateProjectDialog> with TickerProviderStateMixin {
+class _CreateProjectDialogState extends State<_CreateProjectDialog> with SingleTickerProviderStateMixin {
   final _formKey = GlobalKey<FormFieldState>();
   final _projectService = ProjectService();
   final _speechToText = SpeechToText();

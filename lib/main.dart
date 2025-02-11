@@ -10,6 +10,8 @@ import 'package:flutter/foundation.dart';
 import 'config/firebase_config.dart';
 import 'screens/project_network_screen.dart';
 import 'screens/notifications_screen.dart';
+import 'widgets/app_bottom_navigation.dart';
+import 'services/app_check_service.dart';
 
 void main() async {
   // Ensure Flutter bindings are initialized
@@ -25,6 +27,10 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  // Initialize App Check with our new service
+  final appCheckService = AppCheckService();
+  await appCheckService.initialize();
 
   // Initialize other Firebase configurations
   await FirebaseConfig.initialize();
@@ -84,45 +90,8 @@ class MainNavigationScreen extends StatefulWidget {
 }
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
-  int _selectedIndex = 2;  // Start with the network view tab
-
-  static final List<Widget> _screens = [
-    const ProjectsScreen(),
-    NotificationsScreen(),
-    const ProjectNetworkScreen(),  // Move network screen to index 2
-  ];
-
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: _screens[_selectedIndex],
-      bottomNavigationBar: NavigationBar(
-        onDestinationSelected: _onItemTapped,
-        selectedIndex: _selectedIndex,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.list),
-            selectedIcon: Icon(Icons.list),
-            label: 'List',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.notifications_outlined),
-            selectedIcon: Icon(Icons.notifications),
-            label: 'Notifications',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.account_tree_outlined),
-            selectedIcon: Icon(Icons.account_tree),
-            label: 'Network',
-          ),
-        ],
-      ),
-    );
+    return const ProjectNetworkScreen();
   }
 }

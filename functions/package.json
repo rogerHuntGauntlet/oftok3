@@ -23,5 +23,10 @@
   "devDependencies": {
     "firebase-functions-test": "^3.1.0"
   },
-  "private": true
+  "private": true,
+  "firebase-functions-config": {
+    "timeoutSeconds": 540,
+    "memory": "2GB",
+    "enforceAppCheck": false
+  }
 }

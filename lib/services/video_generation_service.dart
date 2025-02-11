@@ -1,75 +1,106 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import './user_service.dart';
+import './app_check_service.dart';
 
 class VideoGenerationService {
-  static const String baseUrl = 'https://api.replicate.com/v1';
+  static const int tokensPerGeneration = 250;
+  static const int _maxRetryAttempts = 3;
+  static const Duration _initialRetryDelay = Duration(seconds: 2);
   
+  final UserService _userService = UserService();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFunctions _functions = FirebaseFunctions.instance;
+  final AppCheckService _appCheckService = AppCheckService();
+
   Future<Map<String, dynamic>> generateVideo(String prompt) async {
-    final apiKey = dotenv.env['REPLICATE_API_KEY'];
-    if (apiKey == null) throw Exception('Replicate API key not found');
+    final user = _auth.currentUser;
+
+    if (user == null) {
+      throw Exception('User must be authenticated to generate videos');
+    }
 
     try {
+      // First ensure user exists in database with tokens
+      final currentUser = await _userService.getCurrentUser();
+      if (currentUser == null) {
+        // Create user if they don't exist
+        await _userService.createOrUpdateUser(user);
+        print('Created new user with initial tokens');
+      }
+
+      // Now check if user has enough tokens
+      final hasTokens = await _userService.hasEnoughTokens(user.uid, tokensPerGeneration);
+      if (!hasTokens) {
+        throw Exception('Insufficient tokens. You need $tokensPerGeneration tokens to generate a video.');
+      }
+
       print('Starting video generation with prompt: $prompt');
       
-      // Create prediction
-      final response = await http.post(
-        Uri.parse('$baseUrl/predictions'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $apiKey',
-          'Prefer': 'wait=60'  // Wait up to 60 seconds for the model to run
-        },
-        body: jsonEncode({
-          'version': 'ee6dae0d5c7dc809d3731e0f4a701c1e5b9e0c06a6a6bf2ac6be2c8141b0a120',
-          'input': {
-            'prompt': prompt
+      // Implement retry logic for token refresh and function call
+      int retryCount = 0;
+      Exception? lastError;
+
+      while (retryCount < _maxRetryAttempts) {
+        try {
+          // Get fresh ID token
+          final idToken = await user.getIdToken(true);
+          print('Got fresh ID token'); // Debug print
+
+          // Get fresh App Check token
+          final appCheckToken = await _appCheckService.getToken(forceRefresh: retryCount > 0);
+          if (appCheckToken == null) {
+            throw Exception('Failed to obtain App Check token');
           }
-        }),
-      );
+          print('Got fresh App Check token'); // Debug print
+          
+          // Call the Cloud Function with a longer timeout
+          final HttpsCallable callable = _functions.httpsCallable(
+            'generateVideo',
+            options: HttpsCallableOptions(
+              timeout: const Duration(minutes: 5),
+            ),
+          );
+          final result = await callable.call({
+            'prompt': prompt
+          });
 
-      if (response.statusCode != 201) {
-        final error = jsonDecode(response.body);
-        throw Exception('Failed to start video generation: ${error['detail'] ?? response.body}');
-      }
+          final data = result.data as Map<String, dynamic>;
+          
+          if (!data['success']) {
+            throw Exception('Video generation failed: ${data['error']}');
+          }
 
-      final prediction = jsonDecode(response.body);
-      final String predictionId = prediction['id'];
-      print('Created prediction: $predictionId');
-      
-      // Poll for completion
-      while (true) {
-        final statusResponse = await http.get(
-          Uri.parse('$baseUrl/predictions/$predictionId'),
-          headers: {
-            'Authorization': 'Bearer $apiKey',
-          },
-        );
-
-        if (statusResponse.statusCode != 200) {
-          final error = jsonDecode(statusResponse.body);
-          throw Exception('Failed to check generation status: ${error['detail'] ?? statusResponse.body}');
-        }
-
-        final status = jsonDecode(statusResponse.body);
-        print('Status update: ${status['status']}');
-        
-        if (status['status'] == 'succeeded') {
-          print('Generation succeeded: ${status['output']}');
           return {
             'success': true,
-            'videoUrl': status['output'],
-            'remainingToday': 'unlimited'
+            'videoUrl': data['videoUrl'],
+            'tokensDeducted': data['tokensDeducted'],
+            'remainingTokens': data['remainingTokens']
           };
-        } else if (status['status'] == 'failed') {
-          throw Exception('Video generation failed: ${status['error']}');
-        } else if (status['status'] == 'canceled') {
-          throw Exception('Video generation was canceled');
+        } catch (e) {
+          lastError = e is Exception ? e : Exception(e.toString());
+          print('Attempt ${retryCount + 1} failed: $e');
+          
+          // Check if we should retry
+          if (e.toString().contains('App Check') || 
+              e.toString().contains('Authentication required') ||
+              e.toString().contains('Too many attempts')) {
+            retryCount++;
+            if (retryCount < _maxRetryAttempts) {
+              final delay = _initialRetryDelay * (1 << retryCount);
+              print('Retrying in ${delay.inSeconds} seconds...');
+              await Future.delayed(delay);
+              continue;
+            }
+          } else {
+            // For other errors, don't retry
+            rethrow;
+          }
         }
-
-        // Wait before polling again
-        await Future.delayed(const Duration(seconds: 2));
       }
+      
+      // If we get here, all retries failed
+      throw lastError ?? Exception('Failed to generate video after $_maxRetryAttempts attempts');
     } catch (e) {
       print('Error in video generation: $e');
       throw Exception('Error generating video: $e');

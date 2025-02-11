@@ -1,9 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../services/user_service.dart';
-import '../services/video/video_preload_service.dart';
-import '../services/video/media_kit_player_service.dart';
-import 'projects_screen.dart';
+import '../services/auth_service.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -13,15 +10,15 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  final _auth = FirebaseAuth.instance;
-  final _userService = UserService();
+  final _auth = AuthService();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _displayNameController = TextEditingController();
   bool _isLoading = false;
+  bool _isGoogleLoading = false;
 
   Future<void> _register() async {
-    if (_emailController.text.isEmpty || 
+    if (_emailController.text.isEmpty ||
         _passwordController.text.isEmpty ||
         _displayNameController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -33,72 +30,80 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => _isLoading = true);
 
     try {
-      print('Attempting to create user account...'); // Debug log
-      // Create the user account
-      final userCredential = await _auth.createUserWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
+      await _auth.registerWithEmailPassword(
+        _emailController.text,
+        _passwordController.text,
+        _displayNameController.text,
       );
-
-      print('User account created, updating display name...'); // Debug log
-      // Update the user's display name
-      await userCredential.user?.updateDisplayName(_displayNameController.text.trim());
-
-      print('Display name updated, creating Firestore document...'); // Debug log
-      // Create the user document in Firestore
-      if (userCredential.user != null) {
-        await _userService.createOrUpdateUser(userCredential.user!);
-        print('Firestore document created successfully'); // Debug log
-        
-        // Initialize video preloading service
-        final preloadService = VideoPreloadService(
-          factory: MediaKitPlayerFactory(),
-        );
-
-        // Navigate to projects screen after successful registration
-        if (mounted) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(
-              builder: (context) => ProjectsScreen(
-                preloadService: preloadService,
-              ),
-            ),
-          );
-        }
-      }
-      
-    } catch (e) {
-      print('Registration error: $e'); // Debug log
+    } on FirebaseAuthException catch (e) {
       if (mounted) {
-        String errorMessage = 'Registration failed';
-        
-        if (e is FirebaseAuthException) {
-          switch (e.code) {
-            case 'email-already-in-use':
-              errorMessage = 'This email is already registered';
-              break;
-            case 'invalid-email':
-              errorMessage = 'Please enter a valid email address';
-              break;
-            case 'operation-not-allowed':
-              errorMessage = 'Email/password accounts are not enabled. Please contact support.';
-              break;
-            case 'weak-password':
-              errorMessage = 'Please choose a stronger password';
-              break;
-            default:
-              errorMessage = 'Registration error: ${e.message}';
-          }
-        }
-        
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(errorMessage)),
+          SnackBar(
+            content: Text(_getErrorMessage(e)),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
       }
+    }
+  }
+
+  Future<void> _signInWithGoogle() async {
+    setState(() => _isGoogleLoading = true);
+
+    try {
+      await _auth.signInWithGoogle();
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_getErrorMessage(e)),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isGoogleLoading = false);
+      }
+    }
+  }
+
+  String _getErrorMessage(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'email-already-in-use':
+        return 'This email is already registered';
+      case 'invalid-email':
+        return 'Please enter a valid email address';
+      case 'operation-not-allowed':
+        return 'Email/password accounts are not enabled. Please contact support.';
+      case 'weak-password':
+        return 'Please choose a stronger password';
+      case 'ERROR_ABORTED_BY_USER':
+        return 'Sign in was aborted';
+      default:
+        return 'Error: ${e.message}';
     }
   }
 
@@ -124,7 +129,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   const Icon(
-                    Icons.person_add,
+                    Icons.video_library,
                     size: 80,
                     color: Colors.white,
                   ),
@@ -144,10 +149,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       hintText: 'Display Name',
                       filled: true,
                       fillColor: Colors.white.withOpacity(0.9),
+                      prefixIcon: const Icon(Icons.person),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
+                    enabled: !_isLoading && !_isGoogleLoading,
                   ),
                   const SizedBox(height: 16),
                   TextField(
@@ -156,11 +163,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       hintText: 'Email',
                       filled: true,
                       fillColor: Colors.white.withOpacity(0.9),
+                      prefixIcon: const Icon(Icons.email),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
                     keyboardType: TextInputType.emailAddress,
+                    enabled: !_isLoading && !_isGoogleLoading,
                   ),
                   const SizedBox(height: 16),
                   TextField(
@@ -169,18 +178,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       hintText: 'Password',
                       filled: true,
                       fillColor: Colors.white.withOpacity(0.9),
+                      prefixIcon: const Icon(Icons.lock),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
                     obscureText: true,
+                    enabled: !_isLoading && !_isGoogleLoading,
                   ),
                   const SizedBox(height: 24),
                   SizedBox(
                     width: double.infinity,
                     height: 50,
                     child: ElevatedButton(
-                      onPressed: _isLoading ? null : _register,
+                      onPressed: (!_isLoading && !_isGoogleLoading) ? _register : null,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.white,
                         foregroundColor: Colors.deepPurple,
@@ -197,8 +208,58 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
+                  const Row(
+                    children: [
+                      Expanded(child: Divider(color: Colors.white54)),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                          'OR',
+                          style: TextStyle(
+                            color: Colors.white54,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Expanded(child: Divider(color: Colors.white54)),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: OutlinedButton.icon(
+                      onPressed: (!_isLoading && !_isGoogleLoading) ? _signInWithGoogle : null,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      icon: _isGoogleLoading
+                          ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Image.network(
+                              'https://www.google.com/favicon.ico',
+                              width: 24,
+                              height: 24,
+                            ),
+                      label: const Text(
+                        'Continue with Google',
+                        style: TextStyle(fontSize: 16),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
                   TextButton(
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: (!_isLoading && !_isGoogleLoading) ? () => Navigator.pop(context) : null,
                     child: const Text(
                       'Already have an account? Login',
                       style: TextStyle(

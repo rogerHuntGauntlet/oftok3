@@ -12,6 +12,11 @@ import '../widgets/video_thumbnail.dart';
 import '../widgets/video_generation_dialog.dart';
 import 'video_feed_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'projects_screen.dart';
+import 'project_network_screen.dart';
+import 'notifications_screen.dart';
+import '../widgets/token_purchase_dialog.dart';
+import '../widgets/app_bottom_navigation.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final Project project;
@@ -763,51 +768,6 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       appBar: AppBar(
         title: Text(widget.project.name),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.movie_creation),
-            tooltip: 'Generate AI Video',
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (context) => VideoGenerationDialog(
-                  onVideoGenerated: (String videoUrl) async {
-                    // Create a new video entry
-                    try {
-                      final video = await _videoService.createVideoFromUrl(
-                        url: videoUrl,
-                        userId: widget.project.userId,
-                        title: 'AI Generated Video',
-                        duration: 10, // AI videos are limited to 10 seconds
-                      );
-
-                      await _projectService.addVideoToProject(
-                        widget.project.id,
-                        video.id,
-                      );
-
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('AI video added to project successfully'),
-                            backgroundColor: Colors.green,
-                          ),
-                        );
-                      }
-                    } catch (e) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Error adding AI video: ${e.toString()}'),
-                            backgroundColor: Colors.red,
-                          ),
-                        );
-                      }
-                    }
-                  },
-                ),
-              );
-            },
-          ),
           // Invite button
           IconButton(
             icon: const Icon(Icons.person_add),
@@ -1118,63 +1078,144 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
           );
         },
       ),
-      floatingActionButton: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          FloatingActionButton.extended(
-            heroTag: 'find_videos',
-            onPressed: () async {
-              try {
-                // Get videos not in the project
-                final availableVideos = await _videoService.getAvailableVideos(widget.project.videoIds);
-
-                if (!mounted) return;
-
-                if (availableVideos.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('No available videos to add'),
-                    ),
-                  );
-                  return;
-                }
-
-                // Show videos in video feed
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => VideoFeedScreen(
-                      projectId: widget.project.id,
-                      videoUrls: availableVideos.map((v) => v.url).toList(),
-                      videoIds: availableVideos.map((v) => v.id).toList(),
-                      projectName: 'Available Videos',
-                      preloadService: widget.preloadService,
-                    ),
+      bottomNavigationBar: AppBottomNavigation(currentIndex: 0),
+      floatingActionButton: FloatingActionButton(
+        child: const Icon(Icons.add),
+        onPressed: () {
+          showModalBottomSheet(
+            context: context,
+            builder: (context) => Container(
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.upload),
+                    title: const Text('Upload Video'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _uploadVideo();
+                    },
                   ),
-                );
-              } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Error loading videos: ${e.toString()}'),
-                      backgroundColor: Colors.red,
+                  ListTile(
+                    leading: const Icon(Icons.video_library),
+                    title: const Text('Find Videos'),
+                    onTap: () async {
+                      Navigator.pop(context);
+                      try {
+                        final availableVideos = await _videoService.getAvailableVideos(widget.project.videoIds);
+                        if (!mounted) return;
+                        if (availableVideos.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('No available videos to add')),
+                          );
+                          return;
+                        }
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => VideoFeedScreen(
+                              projectId: widget.project.id,
+                              videoUrls: availableVideos.map((v) => v.url).toList(),
+                              videoIds: availableVideos.map((v) => v.id).toList(),
+                              projectName: 'Available Videos',
+                              preloadService: widget.preloadService,
+                            ),
+                          ),
+                        );
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Error loading videos: ${e.toString()}'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      }
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.movie_creation),
+                    title: Row(
+                      children: [
+                        const Text('Generate AI Video'),
+                        const SizedBox(width: 8),
+                        FutureBuilder<AppUser?>(
+                          future: _userService.getCurrentUser(),
+                          builder: (context, snapshot) {
+                            return Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.primaryContainer,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.token, size: 14),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${snapshot.data?.tokens ?? 0}',
+                                    style: TextStyle(
+                                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ],
                     ),
-                  );
-                }
-              }
-            },
-            icon: const Icon(Icons.video_library),
-            label: const Text('Find Videos'),
-          ),
-          const SizedBox(width: 16),
-          FloatingActionButton.extended(
-            heroTag: 'upload_video',
-            onPressed: _uploadVideo,
-            icon: const Icon(Icons.upload),
-            label: const Text('Upload'),
-          ),
-        ],
+                    onTap: () {
+                      Navigator.pop(context);
+                      showDialog(
+                        context: context,
+                        builder: (context) => VideoGenerationDialog(
+                          onVideoGenerated: (String videoUrl) async {
+                            try {
+                              final video = await _videoService.createVideoFromUrl(
+                                url: videoUrl,
+                                userId: widget.project.userId,
+                                title: 'AI Generated Video',
+                                duration: 10,
+                              );
+                              await _projectService.addVideoToProject(
+                                widget.project.id,
+                                video.id,
+                              );
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('AI video added to project successfully'),
+                                    backgroundColor: Colors.green,
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Error adding AI video: ${e.toString()}'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
     );
   }
 } 

@@ -3,6 +3,7 @@ import '../models/notification.dart' as app;
 import '../services/notification_service.dart';
 import '../services/project_service.dart';
 import 'project_details_screen.dart';
+import '../widgets/app_bottom_navigation.dart';
 
 class NotificationsScreen extends StatelessWidget {
   final NotificationService _notificationService = NotificationService();
@@ -55,6 +56,7 @@ class NotificationsScreen extends StatelessWidget {
           );
         },
       ),
+      bottomNavigationBar: AppBottomNavigation(currentIndex: 2),
     );
   }
 }

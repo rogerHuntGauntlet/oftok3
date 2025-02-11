@@ -12,6 +12,9 @@ const logger = require("firebase-functions/logger");
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const { generateVideo } = require('./src/videoGeneration');
+const Replicate = require('replicate');
+const cors = require('cors')({ origin: true });
+require('dotenv').config();
 
 // Initialize with service account
 const serviceAccount = require('./service-account.json');
@@ -90,39 +93,92 @@ const verifyAppCheck = async (context) => {
   console.log('App Check verification successful for app:', context.app.appId);
 };
 
-exports.generateVideo = functions
-  .runWith({
-    timeoutSeconds: 300,    // 5 minute timeout
-    memory: '2GB',
-    enforceAppCheck: false  // Disable App Check enforcement
-  })
-  .https.onCall(async (data, context) => {
-    try {
-      // Check if request is authenticated
-      if (!context.auth) {
-        throw new functions.https.HttpsError(
-          'unauthenticated',
-          'The function must be called while authenticated.'
-        );
-      }
+const TOKENS_PER_GENERATION = 250;
+const MODEL_VERSION = "luma/ray";
 
-      console.log('Processing video generation request for user:', context.auth.uid);
-      
-      // Call your video generation logic
-      const result = await generateVideo(data.prompt);
-      
-      console.log('Video generation successful');
-      return {
-        success: true,
-        videoUrl: result.videoUrl,
-        remainingToday: result.remainingGenerations
-      };
-      
-    } catch (error) {
-      console.error('Error in generateVideo:', error);
+exports.generateVideo = functions.https.onCall(async (data, context) => {
+  try {
+    // Verify authentication
+    if (!context.auth) {
+      console.error('Authentication failed: No auth context');
       throw new functions.https.HttpsError(
-        'internal',
-        'An error occurred while generating the video. Please try again later.'
+        'unauthenticated',
+        'User must be authenticated'
       );
     }
-  });
+
+    // Skip App Check verification in development
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('Skipping App Check verification in development mode');
+    } else if (!context.app) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'App Check verification failed'
+      );
+    }
+
+    const uid = context.auth.uid;
+    const prompt = data.prompt;
+
+    if (!prompt) {
+      throw new functions.https.HttpsError('invalid-argument', 'Prompt is required');
+    }
+
+    // Check user's token balance
+    const userRef = admin.firestore().collection('users').doc(uid);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'User not found');
+    }
+
+    const tokens = userDoc.data().tokens || 0;
+    if (tokens < TOKENS_PER_GENERATION) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        `Insufficient tokens. You need ${TOKENS_PER_GENERATION} tokens to generate a video.`
+      );
+    }
+
+    // Initialize Replicate client
+    const replicate = new Replicate({
+      auth: process.env.REPLICATE_API_TOKEN,
+    });
+
+    // Start the prediction
+    const prediction = await replicate.predictions.create({
+      version: MODEL_VERSION,
+      input: {
+        prompt: prompt
+      },
+    });
+
+    // Wait for the prediction to complete
+    const result = await replicate.predictions.wait(prediction.id);
+
+    if (result.error) {
+      throw new functions.https.HttpsError('aborted', `Video generation failed: ${result.error}`);
+    }
+
+    if (!result.output) {
+      throw new functions.https.HttpsError('internal', 'No output URL was provided');
+    }
+
+    // Deduct tokens after successful generation
+    await userRef.update({
+      tokens: admin.firestore.FieldValue.increment(-TOKENS_PER_GENERATION)
+    });
+
+    // Return the result
+    return {
+      success: true,
+      videoUrl: result.output,
+      tokensDeducted: TOKENS_PER_GENERATION,
+      remainingTokens: tokens - TOKENS_PER_GENERATION
+    };
+
+  } catch (error) {
+    console.error('Video generation error:', error);
+    throw new functions.https.HttpsError('internal', error.message);
+  }
+});

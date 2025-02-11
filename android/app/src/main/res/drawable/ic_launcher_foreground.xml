@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Background Circle -->
+    <path
+        android:fillColor="#673AB7"
+        android:pathData="M54,28 A26,26 0 1,0 54,80 A26,26 0 1,0 54,28"/>
+    
+    <!-- Play Triangle -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,42 L48,66 L66,54 Z"/>
+    
+    <!-- OHF Text -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,70 L78,70"
+        android:strokeWidth="3"
+        android:strokeColor="#FFFFFF"/>
+    
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:pathData="M35,75 L73,75 Q74,75 74,74 L74,66"/>
+</vector> 

@@ -1,0 +1,13 @@
+{
+  "name": "video-generator",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Generate videos using Replicate API",
+  "main": "generate_video.js",
+  "scripts": {
+    "start": "node generate_video.js"
+  },
+  "dependencies": {
+    "replicate": "^0.25.2"
+  }
+} 

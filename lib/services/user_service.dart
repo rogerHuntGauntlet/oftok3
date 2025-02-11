@@ -106,24 +106,38 @@ class UserService {
   Future<void> createOrUpdateUser(User firebaseUser) async {
     print('Creating/updating user: ${firebaseUser.uid}'); // Debug print
     final user = AppUser.fromFirebaseUser(firebaseUser);
-    final now = DateTime.now();
     
     try {
       final docRef = _firestore.collection('users').doc(user.id);
       final doc = await docRef.get();
       
       if (!doc.exists) {
-        // Create new user
+        // Create new user with initial tokens
         await docRef.set({
-          ...user.toJson(),
-          'createdAt': now.toIso8601String(),
-          'updatedAt': now.toIso8601String(),
+          'uid': user.id,  // Add both uid and id for compatibility
+          'id': user.id,
+          'displayName': user.displayName,
+          'email': user.email,
+          'photoUrl': user.photoUrl,
+          'isAuthenticated': user.isAuthenticated,
+          'tokens': 1000, // Initial tokens
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
         });
+        print('Created new user with 1000 initial tokens'); // Debug print
       } else {
-        // Update existing user
+        // Update existing user but preserve tokens
+        final data = doc.data()!;
         await docRef.update({
-          ...user.toJson(),
-          'updatedAt': now.toIso8601String(),
+          'uid': user.id,  // Ensure uid is set
+          'id': user.id,   // Ensure id is set
+          'displayName': user.displayName,
+          'email': user.email,
+          'photoUrl': user.photoUrl,
+          'isAuthenticated': user.isAuthenticated,
+          'updatedAt': FieldValue.serverTimestamp(),
+          // Ensure tokens exist, set to 1000 if they don't
+          'tokens': data['tokens'] ?? 1000,
         });
       }
       print('Successfully updated user in Firestore'); // Debug print
@@ -151,22 +165,55 @@ class UserService {
 
   // Get current user
   Future<AppUser?> getCurrentUser() async {
-    final firebaseUser = _auth.currentUser;
-    if (firebaseUser == null) return null;
-    
     try {
-      final doc = await _firestore.collection('users').doc(firebaseUser.uid).get();
-      if (doc.exists) {
-        return AppUser.fromJson(doc.data()!);
-      } else {
-        // Create user document if it doesn't exist
-        final user = AppUser.fromFirebaseUser(firebaseUser);
-        await createOrUpdateUser(firebaseUser);
-        return user;
+      final firebaseUser = _auth.currentUser;
+      if (firebaseUser == null) return null;
+
+      print('Getting user document for ID: ${firebaseUser.uid}'); // Debug print
+      final userDoc = await _firestore.collection('users').doc(firebaseUser.uid).get();
+      print('User document exists: ${userDoc.exists}'); // Debug print
+      
+      if (!userDoc.exists) {
+        print('Creating new user document'); // Debug print
+        // Create new user if doesn't exist
+        final userData = {
+          'displayName': firebaseUser.displayName ?? 'User',
+          'email': firebaseUser.email ?? '',
+          'photoUrl': firebaseUser.photoURL,
+          'isAuthenticated': true,
+          'tokens': 1000, // Initial tokens
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+        print('New user data to be written: $userData'); // Debug print
+        
+        await _firestore.collection('users').doc(firebaseUser.uid).set(userData);
+        
+        // Fetch the newly created user
+        final newUserDoc = await _firestore.collection('users').doc(firebaseUser.uid).get();
+        print('New user data from Firestore: ${newUserDoc.data()}'); // Debug print
+        return AppUser.fromJson(newUserDoc.data()!, documentId: newUserDoc.id);
       }
+
+      final userData = userDoc.data()!;
+      print('Existing user data from Firestore: $userData'); // Debug print
+      
+      // Ensure tokens exist
+      if (!userData.containsKey('tokens')) {
+        print('No tokens field found, adding default 1000 tokens'); // Debug print
+        await _firestore.collection('users').doc(firebaseUser.uid).update({
+          'tokens': 1000,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        userData['tokens'] = 1000;
+      }
+
+      final user = AppUser.fromJson(userData, documentId: userDoc.id);
+      print('Final user object tokens: ${user.tokens}'); // Debug print
+      return user;
     } catch (e) {
       print('Error getting current user: $e');
-      return AppUser.fromFirebaseUser(firebaseUser);
+      return null;
     }
   }
 
@@ -208,6 +255,70 @@ class UserService {
     } catch (e) {
       print('Error fetching users: $e'); // Debug print
       return [];
+    }
+  }
+
+  // Update user tokens
+  Future<void> updateUserTokens(String userId, int newTokenCount) async {
+    try {
+      await _firestore.collection('users').doc(userId).update({
+        'tokens': newTokenCount,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      print('Error updating user tokens: $e');
+      throw e;
+    }
+  }
+
+  // Check if user has enough tokens
+  Future<bool> hasEnoughTokens(String userId, int requiredTokens) async {
+    try {
+      print('Checking tokens for user: $userId'); // Debug log
+      final doc = await _firestore.collection('users').doc(userId).get();
+      print('User document exists: ${doc.exists}'); // Debug log
+      if (!doc.exists) return false;
+      
+      final data = doc.data();
+      print('User data from hasEnoughTokens: $data'); // Debug log
+      
+      if (!data!.containsKey('tokens')) {
+        print('No tokens field found in document!'); // Debug log
+        return false;
+      }
+      
+      final rawTokens = data['tokens'];
+      print('Raw tokens value type: ${rawTokens.runtimeType}'); // Debug log
+      print('Raw tokens value: $rawTokens'); // Debug log
+      
+      final currentTokens = rawTokens is int ? rawTokens : 0;
+      print('Parsed current tokens: $currentTokens'); // Debug log
+      print('Required tokens: $requiredTokens'); // Debug log
+      
+      final hasEnough = currentTokens >= requiredTokens;
+      print('Has enough tokens? $hasEnough'); // Debug log
+      
+      return hasEnough;
+    } catch (e) {
+      print('Error checking tokens: $e');
+      return false;
+    }
+  }
+
+  // Deduct tokens from user
+  Future<bool> deductTokens(String userId, int tokensToDeduct) async {
+    try {
+      final doc = await _firestore.collection('users').doc(userId).get();
+      if (!doc.exists) return false;
+      
+      final currentTokens = doc.data()?['tokens'] as int? ?? 0;
+      if (currentTokens < tokensToDeduct) return false;
+      
+      await updateUserTokens(userId, currentTokens - tokensToDeduct);
+      return true;
+    } catch (e) {
+      print('Error deducting user tokens: $e');
+      return false;
     }
   }
 } 
