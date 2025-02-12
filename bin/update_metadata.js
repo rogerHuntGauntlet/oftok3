@@ -6,6 +6,9 @@ const dotenv = require('dotenv');
 const path = require('path');
 const https = require('https');
 const { Readable } = require('stream');
+const os = require('os');
+const fs = require('fs').promises;
+const { spawn } = require('child_process');
 
 // Load environment variables from the root .env file
 dotenv.config({ path: path.join(__dirname, '../.env') });
@@ -111,12 +114,178 @@ async function generateAIContent(title, isAIGenerated = false) {
 }
 
 async function generateThumbnail(videoUrl, videoId) {
-  // TODO: Implement actual thumbnail generation
-  // For now, use a more visually interesting placeholder
-  const width = 1280;
-  const height = 720;
-  const category = 'nature'; // Can be: nature, city, technology, abstract
-  return `https://source.unsplash.com/random/${width}x${height}/?${category}`;
+  const tempDir = os.tmpdir();
+  const videoPath = path.join(tempDir, `${videoId}.mp4`);
+  const thumbnailPath = path.join(tempDir, `${videoId}_thumb.jpg`);
+  const gifPath = path.join(tempDir, `${videoId}_preview.gif`);
+
+  try {
+    // Download video to temp file
+    console.log('Downloading video for thumbnail generation...');
+    const videoBuffer = await downloadVideo(videoUrl);
+    await fs.writeFile(videoPath, videoBuffer);
+
+    // Generate thumbnail using FFmpeg
+    console.log('Generating thumbnail using FFmpeg...');
+    await new Promise((resolve, reject) => {
+      const ffmpeg = spawn('tools/ffmpeg/ffmpeg-6.1.1-essentials_build/bin/ffmpeg.exe', [
+        '-i', videoPath,
+        '-vf', 'thumbnail,scale=1280:720',
+        '-frames:v', '1',
+        thumbnailPath
+      ]);
+
+      ffmpeg.stderr.on('data', (data) => {
+        console.log(`FFmpeg: ${data}`);
+      });
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg process exited with code ${code}`));
+        }
+      });
+    });
+
+    // Generate preview GIF using FFmpeg
+    console.log('Generating preview GIF...');
+    await new Promise((resolve, reject) => {
+      const ffmpeg = spawn('tools/ffmpeg/ffmpeg-6.1.1-essentials_build/bin/ffmpeg.exe', [
+        '-i', videoPath,
+        '-vf', 'scale=480:-1:flags=lanczos,fps=15', // 480p width, 15fps
+        '-t', '3', // 3 second preview
+        '-y', gifPath
+      ]);
+
+      ffmpeg.stderr.on('data', (data) => {
+        console.log(`FFmpeg GIF: ${data}`);
+      });
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg GIF process exited with code ${code}`));
+        }
+      });
+    });
+
+    // Upload thumbnail to Firebase Storage
+    console.log('Reading thumbnail file...');
+    const thumbnailBuffer = await fs.readFile(thumbnailPath);
+    
+    console.log('Uploading thumbnail to Firebase Storage...');
+    const thumbnailRef = ref(storage, `thumbnails/${videoId}.jpg`);
+    await uploadBytes(thumbnailRef, thumbnailBuffer, {
+      contentType: 'image/jpeg'
+    });
+    
+    // Upload GIF to Firebase Storage
+    console.log('Reading GIF file...');
+    const gifBuffer = await fs.readFile(gifPath);
+    
+    console.log('Uploading GIF to Firebase Storage...');
+    const gifRef = ref(storage, `previews/${videoId}.gif`);
+    await uploadBytes(gifRef, gifBuffer, {
+      contentType: 'image/gif'
+    });
+    
+    // Get the public URLs
+    const thumbnailUrl = await getDownloadURL(thumbnailRef);
+    const previewUrl = await getDownloadURL(gifRef);
+
+    // Cleanup temp files
+    await fs.unlink(videoPath);
+    await fs.unlink(thumbnailPath);
+    await fs.unlink(gifPath);
+
+    return { thumbnailUrl, previewUrl };
+  } catch (error) {
+    console.error('Error generating thumbnail/preview:', error);
+    // Cleanup temp files in case of error
+    try {
+      await fs.unlink(videoPath);
+      await fs.unlink(thumbnailPath);
+      await fs.unlink(gifPath);
+    } catch {}
+    throw error;
+  }
+}
+
+async function convertToHLS(videoPath, videoId) {
+  const tempDir = os.tmpdir();
+  const hlsDir = path.join(tempDir, `hls_${videoId}`);
+  
+  try {
+    // Create HLS directory
+    await fs.mkdir(hlsDir, { recursive: true });
+    
+    // Convert video to HLS using FFmpeg
+    console.log('Converting video to HLS format...');
+    await new Promise((resolve, reject) => {
+      const ffmpeg = spawn('tools/ffmpeg/ffmpeg-6.1.1-essentials_build/bin/ffmpeg.exe', [
+        '-i', videoPath,
+        '-profile:v', 'baseline',
+        '-level', '3.0',
+        '-start_number', '0',
+        '-hls_time', '10',
+        '-hls_list_size', '0',
+        '-f', 'hls',
+        path.join(hlsDir, 'playlist.m3u8')
+      ]);
+
+      ffmpeg.stderr.on('data', (data) => {
+        console.log(`FFmpeg HLS: ${data}`);
+      });
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg HLS process exited with code ${code}`));
+        }
+      });
+    });
+
+    // Upload HLS files to Firebase Storage
+    console.log('Uploading HLS files to Firebase Storage...');
+    const files = await fs.readdir(hlsDir);
+    
+    for (const file of files) {
+      const filePath = path.join(hlsDir, file);
+      const fileBuffer = await fs.readFile(filePath);
+      const contentType = file.endsWith('.m3u8') ? 'application/x-mpegURL' : 'video/MP2T';
+      
+      const hlsRef = ref(storage, `videos/${videoId}/hls/${file}`);
+      await uploadBytes(hlsRef, fileBuffer, {
+        contentType: contentType
+      });
+    }
+
+    // Get the playlist URL
+    const playlistRef = ref(storage, `videos/${videoId}/hls/playlist.m3u8`);
+    const hlsUrl = await getDownloadURL(playlistRef);
+
+    // Cleanup HLS directory
+    for (const file of files) {
+      await fs.unlink(path.join(hlsDir, file));
+    }
+    await fs.rmdir(hlsDir);
+
+    return hlsUrl;
+  } catch (error) {
+    console.error('Error converting to HLS:', error);
+    // Cleanup on error
+    try {
+      const files = await fs.readdir(hlsDir);
+      for (const file of files) {
+        await fs.unlink(path.join(hlsDir, file));
+      }
+      await fs.rmdir(hlsDir);
+    } catch {}
+    throw error;
+  }
 }
 
 async function updateVideoMetadata() {
@@ -144,6 +313,7 @@ async function updateVideoMetadata() {
           // Handle external video URL if needed
           let videoUrl = video.url;
           let needsMetadataUpdate = false;
+          let tempVideoPath = null;
 
           if (videoUrl) {
             if (videoUrl.includes('replicate.delivery') || 
@@ -155,32 +325,70 @@ async function updateVideoMetadata() {
             }
           }
 
-          // Always generate AI content for AI-generated videos or if metadata is missing
+          const updates = {};
+
+          // Download video if we need to process it
+          if (!video.hlsUrl || true) { // Force download for all videos
+            console.log('Downloading video for processing...');
+            const videoBuffer = await downloadVideo(videoUrl);
+            tempVideoPath = path.join(os.tmpdir(), `${doc.id}.mp4`);
+            await fs.writeFile(tempVideoPath, videoBuffer);
+          }
+
+          // Generate HLS if needed
+          if (!video.hlsUrl) {
+            console.log('Generating HLS stream...');
+            try {
+              const hlsUrl = await convertToHLS(tempVideoPath, doc.id);
+              updates.hlsUrl = hlsUrl;
+              console.log('HLS URL:', hlsUrl);
+            } catch (hlsError) {
+              console.error('Error generating HLS:', hlsError);
+            }
+          }
+
+          // Generate thumbnail for all videos
+          console.log('Generating thumbnail...');
+          try {
+            const { thumbnailUrl, previewUrl } = await generateThumbnail(videoUrl, doc.id);
+            updates.thumbnailUrl = thumbnailUrl;
+            updates.previewUrl = previewUrl;
+            console.log('Thumbnail URL:', thumbnailUrl);
+            console.log('Preview URL:', previewUrl);
+          } catch (thumbError) {
+            console.error('Error generating thumbnail:', thumbError);
+          }
+
+          // Generate AI content if needed
           if (video.isAiGenerated || !video.description || !video.tags || needsMetadataUpdate) {
             console.log('Generating AI content...');
             const aiContent = await generateAIContent(video.title || 'Untitled Video', video.isAiGenerated);
-            if (!aiContent) return;
-
-            // Generate new thumbnail
-            console.log('Generating thumbnail...');
-            const thumbnailUrl = await generateThumbnail(videoUrl, doc.id);
-
-            // Update the video document with all new metadata
-            await updateDoc(doc.ref, {
-              title: video.isAiGenerated ? aiContent.title : video.title, // Only update title for AI-generated videos
-              description: aiContent.description,
-              tags: aiContent.tags,
-              thumbnailUrl: thumbnailUrl,
-              ...(videoUrl !== video.url ? { url: videoUrl } : {}),
-              updatedAt: serverTimestamp()
-            });
-
-            console.log(`✓ Updated metadata for video: ${doc.id}`);
-            if (video.isAiGenerated) {
-              console.log(`  New title: ${aiContent.title}`);
+            if (aiContent) {
+              if (video.isAiGenerated) updates.title = aiContent.title;
+              updates.description = aiContent.description;
+              updates.tags = aiContent.tags;
             }
-            console.log(`  Description: ${aiContent.description}`);
-            console.log(`  Tags: ${aiContent.tags.join(', ')}`);
+          }
+
+          // Update video URL if changed
+          if (videoUrl !== video.url) {
+            updates.url = videoUrl;
+          }
+
+          // Update the document if we have any changes
+          if (Object.keys(updates).length > 0) {
+            updates.updatedAt = serverTimestamp();
+            await updateDoc(doc.ref, updates);
+            console.log(`✓ Updated video metadata:`, updates);
+          } else {
+            console.log('No updates needed for this video.');
+          }
+
+          // Cleanup temp video file if it exists
+          if (tempVideoPath) {
+            try {
+              await fs.unlink(tempVideoPath);
+            } catch {}
           }
         } catch (error) {
           console.error(`× Error processing video ${doc.id}:`, error);

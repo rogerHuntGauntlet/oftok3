@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../widgets/video_feed_item.dart';
 import '../services/video/video_preload_service.dart';
 import '../services/video/media_kit_player_service.dart';
+import '../services/video/player_pool.dart';
 import '../models/video.dart';
 import '../models/project.dart';
 import '../services/video_service.dart';
@@ -37,7 +38,7 @@ class VideoFeedScreen extends StatefulWidget {
 
 class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingObserver {
   PageController? _pageController;
-  List<MediaKitPlayerService>? _players;
+  late final PlayerPool _playerPool;
   int _currentPage = 0;
   bool _isLoading = true;
   String? _error;
@@ -46,11 +47,18 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   final SocialService _socialService = SocialService();
   final TextEditingController _commentController = TextEditingController();
   List<Video> _videos = [];
+  bool _isDisposed = false;
+  
+  // Add constants for player management
+  static const int _preloadDistance = 1;  // How many videos to preload ahead/behind
+  static const int _maxCachedPlayers = 3;  // Maximum number of players to keep in memory
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _playerPool = PlayerPool(maxPlayers: _maxCachedPlayers);
+    
     print('\n🟢 === VideoFeedScreen Lifecycle: initState ===');
     print('Video URLs (${widget.videoUrls.length}): ${widget.videoUrls}');
     print('Video IDs (${widget.videoIds.length}): ${widget.videoIds}');
@@ -80,7 +88,6 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     }
 
     print('🟢 Starting initialization sequence...');
-    // Load video details first, then initialize video system
     _loadVideoDetails().then((_) {
       print('🟢 Video details loaded, proceeding with system initialization');
       if (mounted) {
@@ -102,7 +109,8 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     print('Is Loading: $_isLoading');
     print('Has Error: ${_error != null}');
     print('Current Page: $_currentPage');
-    print('Number of Players: ${_players?.length}');
+    print('Active Players: ${_playerPool.activePlayerCount}');
+    print('Available Players: ${_playerPool.availablePlayerCount}');
     print('Number of Videos: ${_videos.length}');
   }
 
@@ -120,23 +128,15 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   @override
   void dispose() {
     print('\n🟢 === VideoFeedScreen Lifecycle: dispose ===');
-    print('Cleaning up resources...');
+    _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
     
     print('Disposing page controller...');
     _pageController?.dispose();
     _pageController = null;
     
-    print('Disposing video players...');
-    for (final player in _players ?? []) {
-      try {
-        player.dispose();
-      } catch (e) {
-        print('❌ Error disposing player: $e');
-      }
-    }
-    _players?.clear();
-    _players = null;
+    print('Disposing player pool...');
+    _playerPool.dispose();
     
     print('Disposing comment controller...');
     _commentController.dispose();
@@ -150,41 +150,35 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     print('\n🟢 === App Lifecycle State Changed: $state ===');
     print('Current Page: $_currentPage');
     print('Is Loading: $_isLoading');
-    print('Number of Players: ${_players?.length}');
+    print('Active Players: ${_playerPool.activePlayerCount}');
     
     switch (state) {
       case AppLifecycleState.paused:
-        print('App paused - pausing all players');
-        _pauseAllPlayers();
+        print('App paused - pausing current video');
+        _pauseCurrentVideo();
         break;
       case AppLifecycleState.resumed:
-        print('App resumed - resuming current player');
-        _resumeCurrentPlayer();
+        print('App resumed - resuming current video');
+        _resumeCurrentVideo();
         break;
       default:
         print('Other lifecycle state: $state');
     }
   }
 
-  Future<void> _pauseAllPlayers() async {
-    print('Pausing all players...');
-    for (final player in _players ?? []) {
-      try {
-        await player.pause();
-      } catch (e) {
-        print('❌ Error pausing player: $e');
-      }
+  Future<void> _pauseCurrentVideo() async {
+    if (_currentPage >= 0 && _currentPage < widget.videoUrls.length) {
+      final url = widget.videoUrls[_currentPage];
+      final player = await _playerPool.checkoutPlayer(url);
+      await player.pause();
     }
   }
 
-  Future<void> _resumeCurrentPlayer() async {
-    print('Resuming current player...');
-    if (_currentPage >= 0 && _currentPage < (_players?.length ?? 0)) {
-      try {
-        await _players?[_currentPage].play();
-      } catch (e) {
-        print('❌ Error resuming player: $e');
-      }
+  Future<void> _resumeCurrentVideo() async {
+    if (_currentPage >= 0 && _currentPage < widget.videoUrls.length) {
+      final url = widget.videoUrls[_currentPage];
+      final player = await _playerPool.checkoutPlayer(url);
+      await player.play();
     }
   }
 
@@ -299,39 +293,32 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     }
   }
 
-  void _initializeVideoSystem() {
+  Future<void> _initializeVideoSystem() async {
     print('\n=== Initializing Video System ===');
+    print('Current page: $_currentPage');
+    print('Initial index: ${widget.initialIndex}');
+    
     try {
+      // Initialize page controller
       _pageController = PageController(initialPage: widget.initialIndex);
       _currentPage = widget.initialIndex;
       
-      // Initialize video players
-      print('Setting up video players...');
-      _players = List.generate(
-        widget.videoUrls.length,
-        (index) => MediaKitPlayerService()
-      );
-      print('Created ${_players?.length} video players');
-
-      // Preload first video
-      if (_players?.isNotEmpty ?? false) {
-        print('Preloading first video...');
-        _preloadVideo(widget.initialIndex);
-      } else {
-        print('❌ No videos to preload');
-      }
-
-      // Add page change listener
-      _pageController?.addListener(() {
-        final nextPage = _pageController?.page?.round() ?? 0;
-        if (_currentPage != nextPage) {
-          print('\nPage changed from $_currentPage to $nextPage');
-          _handlePageChange(nextPage);
-        }
-      });
+      // Initialize current and adjacent videos
+      final initialRange = _getPreloadRange(widget.initialIndex);
+      print('Initial preload range: $initialRange');
       
-      print('✓ Video system initialization complete');
-      print('===========================\n');
+      for (int i = initialRange.start.toInt(); i <= initialRange.end.toInt(); i++) {
+        if (i >= 0 && i < widget.videoUrls.length) {
+          print('Pre-initializing video at index $i');
+          await _initializeVideo(i);
+        }
+      }
+      
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     } catch (e, stackTrace) {
       print('❌ Error initializing video system:');
       print('Error: $e');
@@ -341,70 +328,89 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
           _error = e.toString();
           _isLoading = false;
         });
-        Navigator.of(context).pop();
       }
     }
   }
 
-  void _handlePageChange(int nextPage) async {
-    if (nextPage < 0 || nextPage >= (_players?.length ?? 0)) return;
-    
-    // Pause current video
-    if (_currentPage >= 0 && _currentPage < (_players?.length ?? 0)) {
-      await _players?[_currentPage].pause();
-    }
-
-    // Update current page
-    _currentPage = nextPage;
-
-    // Initialize and play next video
-    final player = _players?[nextPage];
-    if (player != null) {
-      try {
-        await player.initialize(widget.videoUrls[nextPage]);
-        await player.play();
-      } catch (e) {
-        print('Error initializing/playing video at index $nextPage: $e');
-      }
-    }
-
-    // Preload next video if available
-    if (nextPage + 1 < (_players?.length ?? 0)) {
-      final nextPlayer = _players?[nextPage + 1];
-      if (nextPlayer != null) {
-        try {
-          await nextPlayer.initialize(widget.videoUrls[nextPage + 1]);
-        } catch (e) {
-          print('Error preloading next video: $e');
-        }
-      }
-    }
-  }
-
-  Future<void> _preloadVideo(int index) async {
-    if (index < 0 || index >= (_players?.length ?? 0)) {
-      print('❌ Invalid index for preloading: $index');
+  Future<void> _initializeVideo(int index) async {
+    if (index < 0 || index >= widget.videoUrls.length) {
+      print('❌ Invalid video index: $index');
       return;
     }
 
+    final videoUrl = widget.videoUrls[index];
+    print('Initializing video at index $index: $videoUrl');
+
     try {
-      print('\nPreloading video at index $index');
-      final player = _players?[index];
-      if (player == null) return;
+      final player = await _playerPool.checkoutPlayer(videoUrl);
       
-      await player.initialize(widget.videoUrls[index]);
-      
+      // Start playing if it's the current page
       if (index == _currentPage) {
+        print('Auto-playing current page video');
         await player.play();
-        print('✓ Started playing video at index $index');
       }
-      
-      print('✓ Successfully preloaded video at index $index');
     } catch (e, stackTrace) {
-      print('❌ Error preloading video at index $index:');
+      print('❌ Error initializing video at index $index:');
+      print('Error: $e');
+      print('Stack trace: $stackTrace');
+      rethrow;
+    }
+  }
+
+  Future<void> _onPageChanged(int page) async {
+    print('\n=== Page Changed: $page ===');
+    if (_isDisposed) return;
+
+    try {
+      // Pause the previous video
+      if (_currentPage >= 0 && _currentPage < widget.videoUrls.length) {
+        final previousUrl = widget.videoUrls[_currentPage];
+        final previousPlayer = await _playerPool.checkoutPlayer(previousUrl);
+        await previousPlayer.pause();
+        await _playerPool.returnPlayer(previousUrl);
+      }
+
+      // Update current page
+      setState(() {
+        _currentPage = page;
+      });
+
+      // Play the current video
+      if (page >= 0 && page < widget.videoUrls.length) {
+        final currentUrl = widget.videoUrls[page];
+        final currentPlayer = await _playerPool.checkoutPlayer(currentUrl);
+        await currentPlayer.play();
+      }
+
+      // Preload adjacent videos
+      final preloadRange = _getPreloadRange(page);
+      print('Preload range: $preloadRange');
+      
+      for (int i = preloadRange.start.toInt(); i <= preloadRange.end.toInt(); i++) {
+        if (i >= 0 && i < widget.videoUrls.length && i != page) {
+          print('Pre-loading video at index $i');
+          await _initializeVideo(i);
+        }
+      }
+
+      // Clean up videos outside preload range
+      for (int i = 0; i < widget.videoUrls.length; i++) {
+        if (i < preloadRange.start.toInt() || i > preloadRange.end.toInt()) {
+          final url = widget.videoUrls[i];
+          await _playerPool.returnPlayer(url);
+        }
+      }
+    } catch (e, stackTrace) {
+      print('❌ Error handling page change:');
       print('Error: $e');
       print('Stack trace: $stackTrace');
     }
+  }
+
+  RangeValues _getPreloadRange(int currentIndex) {
+    final start = (currentIndex - _preloadDistance).clamp(0, widget.videoUrls.length - 1);
+    final end = (currentIndex + _preloadDistance).clamp(0, widget.videoUrls.length - 1);
+    return RangeValues(start.toDouble(), end.toDouble());
   }
 
   Widget _buildActionButton({
@@ -1015,51 +1021,37 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
 
   @override
   Widget build(BuildContext context) {
-    print('\n🟢 === VideoFeedScreen Build ===');
-    print('Is Loading: $_isLoading');
-    print('Has Error: ${_error != null}');
-    print('Number of Videos: ${_videos.length}');
-    print('Current Page: $_currentPage');
-    
     if (_isLoading) {
-      print('Rendering loading state');
       return const Scaffold(
-        backgroundColor: Colors.black,
         body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-              ),
-              SizedBox(height: 16),
-              Text(
-                'Loading videos...',
-                style: TextStyle(color: Colors.white),
-              ),
-            ],
-          ),
+          child: CircularProgressIndicator(),
         ),
       );
     }
 
-    if (_videos.isEmpty) {
-      print('Rendering empty state');
+    if (_error != null) {
       return Scaffold(
-        backgroundColor: Colors.black,
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.error_outline, color: Colors.white, size: 48),
+              const Icon(Icons.error_outline, size: 48, color: Colors.red),
               const SizedBox(height: 16),
-              const Text(
-                'No videos available',
-                style: TextStyle(color: Colors.white),
+              Text(
+                'Error loading videos',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                style: Theme.of(context).textTheme.bodyMedium,
+                textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
               ElevatedButton(
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
                 child: const Text('Go Back'),
               ),
             ],
@@ -1068,89 +1060,97 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
       );
     }
 
-    print('Rendering video feed with ${_videos.length} videos');
     return Scaffold(
-      backgroundColor: Colors.black,
       body: PageView.builder(
         controller: _pageController,
         scrollDirection: Axis.vertical,
+        onPageChanged: _onPageChanged,
         itemCount: widget.videoUrls.length,
         itemBuilder: (context, index) {
+          final video = _videos[index];
           final videoUrl = widget.videoUrls[index];
-          final videoId = widget.videoIds[index];
-          final preloadedPlayer = _players?[index];
           
-          print('Building video item $index:');
-          print('URL: $videoUrl');
-          print('ID: $videoId');
-          print('Has preloaded player: ${preloadedPlayer != null}');
-          
-          return Stack(
-            children: [
-              VideoFeedItem(
-                videoUrl: videoUrl,
-                videoId: videoId,
-                projectId: widget.projectId ?? 'doomscroll',
-                projectName: widget.projectName,
-                preloadedPlayer: preloadedPlayer,
-                autoPlay: index == _currentPage,
-              ),
-              
-              // Video info overlay
-              if (index < _videos.length)
-                Positioned(
-                  left: 16,
-                  right: 72,
-                  bottom: 16,
-                  child: _buildVideoInfo(_videos[index]),
-                ),
-              
-              // Action buttons
-              if (index < _videos.length)
-                Positioned(
-                  right: 8,
-                  bottom: MediaQuery.of(context).padding.bottom + 16,
+          return FutureBuilder<MediaKitPlayerService>(
+            future: _playerPool.checkoutPlayer(videoUrl),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                return Center(
                   child: Column(
-                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // Like button
-                      _buildLikeButton(_videos[index]),
+                      const Icon(Icons.error_outline, size: 48, color: Colors.red),
                       const SizedBox(height: 16),
-                      
-                      // Comment button
-                      _buildActionButton(
-                        icon: Icons.comment,
-                        label: 'Comment',
-                        onPressed: () => _showCommentSheet(_videos[index]),
+                      Text(
+                        'Error loading video',
+                        style: Theme.of(context).textTheme.titleLarge,
                       ),
-                      const SizedBox(height: 16),
-                      
-                      // Share button
-                      _buildActionButton(
-                        icon: Icons.share,
-                        label: 'Share',
-                        onPressed: () => _handleShare(_videos[index]),
-                      ),
-                      const SizedBox(height: 16),
-                      
-                      // Save to project button
-                      _buildActionButton(
-                        icon: Icons.bookmark_border,
-                        label: 'Save',
-                        onPressed: () => _showProjectSelectionDialog(_videos[index]),
-                      ),
-                      const SizedBox(height: 16),
-                      
-                      // Show projects containing this video
-                      _buildActionButton(
-                        icon: Icons.folder,
-                        label: 'Projects',
-                        onPressed: () => _showVideoProjectsDialog(_videos[index]),
+                      const SizedBox(height: 8),
+                      Text(
+                        snapshot.error.toString(),
+                        style: Theme.of(context).textTheme.bodyMedium,
+                        textAlign: TextAlign.center,
                       ),
                     ],
                   ),
-                ),
-            ],
+                );
+              }
+
+              if (!snapshot.hasData) {
+                return const Center(
+                  child: CircularProgressIndicator(),
+                );
+              }
+
+              return VideoFeedItem(
+                video: video,
+                player: snapshot.data!,
+                projectId: widget.projectId,
+                projectName: widget.projectName,
+                onLike: () async {
+                  if (FirebaseAuth.instance.currentUser == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Please sign in to like videos'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+                  await _socialService.toggleLike(video.id);
+                },
+                onShare: () async {
+                  await Share.share(
+                    'Check out this video from ${widget.projectName}!',
+                    subject: video.title ?? 'Shared video',
+                  );
+                },
+                onProjectTap: widget.projectId == null
+                    ? null
+                    : () async {
+                        try {
+                          final project = await _projectService.getProject(widget.projectId!);
+                          if (project != null && mounted) {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => ProjectDetailsScreen(
+                                  project: project,
+                                ),
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Error loading project: ${e.toString()}'),
+                                backgroundColor: Colors.red,
+                              ),
+                            );
+                          }
+                        }
+                      },
+              );
+            },
           );
         },
       ),

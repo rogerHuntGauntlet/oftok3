@@ -157,6 +157,89 @@ class VideoService {
     }
   }
 
+  // Convert video to HLS format
+  Future<String> convertVideoToHLS(File videoFile, String videoId) async {
+    try {
+      // Create temporary directory for HLS files
+      final tempDir = await getTemporaryDirectory();
+      final hlsDir = Directory('${tempDir.path}/hls_$videoId');
+      await hlsDir.create(recursive: true);
+
+      final outputPath = '${hlsDir.path}/playlist.m3u8';
+      
+      // FFmpeg command for HLS conversion with multiple quality levels
+      final command = '-i ${videoFile.path} '
+          '-filter_complex "[0:v]split=3[v1][v2][v3]; '
+          '[v1]scale=w=640:h=360[v1out]; [v2]scale=w=842:h=480[v2out]; [v3]scale=w=1280:h=720[v3out]" '
+          '-map "[v1out]" -map "[v2out]" -map "[v3out]" -map 0:a -map 0:a -map 0:a '
+          '-c:v libx264 -crf 22 -c:a aac -ar 48000 '
+          '-var_stream_map "v:0,a:0,name:360p v:1,a:1,name:480p v:2,a:2,name:720p" '
+          '-master_pl_name master.m3u8 '
+          '-f hls -hls_time 6 -hls_list_size 0 '
+          '-hls_segment_filename "${hlsDir.path}/%v_segment%d.ts" '
+          '$outputPath';
+
+      // Execute FFmpeg command
+      final session = await FFmpegKit.execute(command);
+      final returnCode = await session.getReturnCode();
+
+      if (returnCode?.isValueSuccess() ?? false) {
+        return hlsDir.path;
+      } else {
+        final logs = await session.getLogs();
+        throw Exception('FFmpeg conversion failed: ${logs.join("\n")}');
+      }
+    } catch (e) {
+      throw Exception('Failed to convert video to HLS: $e');
+    }
+  }
+
+  // Upload HLS files to Firebase Storage
+  Future<String> uploadHLSFiles(String hlsDirPath, String videoId) async {
+    try {
+      final hlsDir = Directory(hlsDirPath);
+      final List<FileSystemEntity> files = await hlsDir.list().toList();
+      
+      // Upload each file
+      for (var file in files) {
+        if (file is File) {
+          final fileName = file.path.split('/').last;
+          final ref = _storage.ref().child('videos/$videoId/hls/$fileName');
+          
+          // Set appropriate content type
+          String contentType = 'application/octet-stream';
+          if (fileName.endsWith('.m3u8')) {
+            contentType = 'application/x-mpegURL';
+          } else if (fileName.endsWith('.ts')) {
+            contentType = 'video/MP2T';
+          }
+          
+          await ref.putFile(
+            file,
+            SettableMetadata(contentType: contentType),
+          );
+        }
+      }
+      
+      // Get the master playlist URL
+      final masterUrl = await _storage
+          .ref()
+          .child('videos/$videoId/hls/master.m3u8')
+          .getDownloadURL();
+          
+      return masterUrl;
+    } catch (e) {
+      throw Exception('Failed to upload HLS files: $e');
+    } finally {
+      // Cleanup temporary directory
+      try {
+        await Directory(hlsDirPath).delete(recursive: true);
+      } catch (e) {
+        print('Warning: Failed to cleanup temporary HLS directory: $e');
+      }
+    }
+  }
+
   // Upload a video file and create video document
   Future<Video> uploadVideo({
     required File videoFile,
@@ -167,9 +250,11 @@ class VideoService {
   }) async {
     final String videoId = _uuid.v4();
     final String videoFileName = '$videoId.mp4';
+    String? hlsUrl;
+    String? thumbnailUrl;
     
     try {
-      // Upload video to Firebase Storage with progress monitoring
+      // Upload original video to Firebase Storage with progress monitoring
       final videoRef = _storage.ref().child('videos/$videoFileName');
       final uploadTask = videoRef.putFile(
         videoFile,
@@ -179,12 +264,25 @@ class VideoService {
       // Monitor upload progress
       uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
         final progress = snapshot.bytesTransferred / snapshot.totalBytes;
-        onProgress?.call(progress);
+        onProgress?.call(progress * 0.3); // 30% progress for initial upload
       });
 
       // Get video URL
       final snapshot = await uploadTask.whenComplete(() {});
       final String videoUrl = await snapshot.ref.getDownloadURL();
+
+      // Generate thumbnail
+      onProgress?.call(0.4); // 40% progress
+      thumbnailUrl = await generateAndUploadThumbnail(videoFile, videoId);
+
+      // Convert video to HLS
+      onProgress?.call(0.5); // 50% progress after thumbnail
+      final hlsDirPath = await convertVideoToHLS(videoFile, videoId);
+      
+      // Upload HLS files
+      onProgress?.call(0.7); // 70% progress after conversion
+      hlsUrl = await uploadHLSFiles(hlsDirPath, videoId);
+      onProgress?.call(0.9); // 90% progress after HLS upload
 
       // Log detailed file info
       final metadata = await snapshot.ref.getMetadata();
@@ -197,6 +295,8 @@ class VideoService {
       print('Updated time: ${metadata.updated}');
       print('MD5 hash: ${metadata.md5Hash}');
       print('Download URL: $videoUrl');
+      print('HLS URL: $hlsUrl');
+      print('Thumbnail URL: $thumbnailUrl');
       print('========================');
 
       // Generate AI metadata
@@ -206,16 +306,18 @@ class VideoService {
       final String? finalDescription = aiResponse['description'];
       final List<String> finalTags = (aiResponse['tags'] as List<dynamic>?)?.cast<String>() ?? [];
 
-      // Create video document in Firestore with a placeholder thumbnail
-      // The actual thumbnail will be generated by the server
+      onProgress?.call(1.0); // 100% progress
+
+      // Create video document in Firestore
       final videoData = Video(
         id: videoId,
         title: finalTitle,
         description: finalDescription,
         url: videoUrl,
+        hlsUrl: hlsUrl,
+        thumbnailUrl: thumbnailUrl,
         userId: userId,
         uploadedAt: DateTime.now(),
-        thumbnailUrl: null, // Will be updated by the server
         duration: duration,
         tags: finalTags,
       );
@@ -227,9 +329,13 @@ class VideoService {
 
       return videoData;
     } catch (e) {
-      // Clean up the uploaded file if operation fails
+      // Clean up the uploaded files if operation fails
       try {
         await _storage.ref().child('videos/$videoFileName').delete();
+        await _storage.ref().child('videos/$videoId/hls').delete();
+        if (thumbnailUrl != null) {
+          await _storage.ref().child('thumbnails/$videoId.jpg').delete();
+        }
       } catch (_) {
         // Ignore cleanup errors
       }
@@ -405,6 +511,7 @@ class VideoService {
   }) async {
     final String videoId = _uuid.v4();
     final String videoFileName = '$videoId.mp4';
+    String? hlsUrl;
     
     try {
       // Update status: Starting
@@ -419,26 +526,39 @@ class VideoService {
         throw Exception('Failed to download video: ${response.statusCode}');
       }
 
+      // Create a temporary file for the downloaded video
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/$videoFileName');
+      await tempFile.writeAsBytes(response.bodyBytes);
+
       // Upload to Firebase Storage
       onProgress?.call('Uploading to storage...', 0.2);
       print('Uploading video to Firebase Storage'); // Debug log
       final videoRef = _storage.ref().child('videos/$videoFileName');
-      final uploadTask = videoRef.putData(
-        response.bodyBytes,
+      final uploadTask = videoRef.putFile(
+        tempFile,
         SettableMetadata(contentType: 'video/mp4'),
       );
 
       // Monitor upload progress
       uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
         final uploadProgress = snapshot.bytesTransferred / snapshot.totalBytes;
-        // Map upload progress to 20-70% of total progress
-        final totalProgress = 0.2 + (uploadProgress * 0.5);
+        // Map upload progress to 20-40% of total progress
+        final totalProgress = 0.2 + (uploadProgress * 0.2);
         onProgress?.call('Uploading video: ${(uploadProgress * 100).toInt()}%', totalProgress);
       });
 
       // Wait for upload to complete
       final snapshot = await uploadTask.whenComplete(() {});
       final String firebaseUrl = await snapshot.ref.getDownloadURL();
+
+      // Convert to HLS
+      onProgress?.call('Converting to HLS format...', 0.5);
+      final hlsDirPath = await convertVideoToHLS(tempFile, videoId);
+      
+      // Upload HLS files
+      onProgress?.call('Uploading HLS files...', 0.7);
+      hlsUrl = await uploadHLSFiles(hlsDirPath, videoId);
       
       // Log detailed file info
       final metadata = await snapshot.ref.getMetadata();
@@ -451,6 +571,7 @@ class VideoService {
       print('Updated time: ${metadata.updated}');
       print('MD5 hash: ${metadata.md5Hash}');
       print('Download URL: $firebaseUrl');
+      print('HLS URL: $hlsUrl');
       print('========================');
       
       // Initialize variables with defaults
@@ -459,7 +580,7 @@ class VideoService {
       List<String> finalTags = [];
 
       // Try to generate AI content
-      onProgress?.call('Generating AI content...', 0.75);
+      onProgress?.call('Generating AI content...', 0.8);
       try {
         print('Generating AI title, caption and tags'); // Debug log
         final projectDetails = await _aiCaptionService.generateProjectDetails(
@@ -485,6 +606,7 @@ class VideoService {
         title: finalTitle,
         description: finalDescription,
         url: firebaseUrl,
+        hlsUrl: hlsUrl,
         userId: userId,
         uploadedAt: DateTime.now(),
         thumbnailUrl: null, // Will be generated by server
@@ -504,7 +626,15 @@ class VideoService {
       print('Description: $finalDescription');
       print('Tags: $finalTags');
       print('Video URL: $firebaseUrl');
+      print('HLS URL: $hlsUrl');
       print('========================');
+      
+      // Cleanup temporary file
+      try {
+        await tempFile.delete();
+      } catch (e) {
+        print('Warning: Failed to delete temporary file: $e');
+      }
       
       // Final completion status
       onProgress?.call('Video ready!', 1.0);
@@ -512,9 +642,10 @@ class VideoService {
       return videoData;
     } catch (e) {
       print('Error creating video from URL: $e'); // Debug log
-      // Clean up the uploaded file if operation fails
+      // Clean up the uploaded files if operation fails
       try {
         await _storage.ref().child('videos/$videoFileName').delete();
+        await _storage.ref().child('videos/$videoId/hls').delete();
       } catch (_) {
         // Ignore cleanup errors
       }
@@ -636,7 +767,10 @@ class VideoService {
   }) async {
     final videoGenerationService = VideoGenerationService();
     String? videoUrl;
+    String? hlsUrl;
+    String? thumbnailUrl;
     int? generationTime;
+    File? tempFile;
     
     try {
       // Generate the video
@@ -651,19 +785,57 @@ class VideoService {
         throw Exception('Failed to generate video: ${result['error']}');
       }
 
-      videoUrl = result['videoUrl'] as String;
+      // Download the generated video to a temporary file
+      final tempDir = await getTemporaryDirectory();
+      final videoId = _uuid.v4();
+      tempFile = File('${tempDir.path}/$videoId.mp4');
+      
+      onProgress?.call(VideoGenerationStatus.processing, 0.3);
+      onError?.call('Downloading generated video...');
+      
+      final response = await http.get(Uri.parse(result['videoUrl']));
+      await tempFile.writeAsBytes(response.bodyBytes);
+      
+      // Generate thumbnail
+      onProgress?.call(VideoGenerationStatus.processing, 0.4);
+      onError?.call('Generating thumbnail...');
+      thumbnailUrl = await generateAndUploadThumbnail(tempFile, videoId);
+      
+      // Upload original video to Firebase
+      onProgress?.call(VideoGenerationStatus.processing, 0.5);
+      onError?.call('Uploading video...');
+      
+      final videoRef = _storage.ref().child('videos/$videoId.mp4');
+      final uploadTask = videoRef.putFile(
+        tempFile,
+        SettableMetadata(contentType: 'video/mp4'),
+      );
+      
+      // Wait for upload to complete
+      final snapshot = await uploadTask.whenComplete(() {});
+      videoUrl = await snapshot.ref.getDownloadURL();
+      
+      // Convert to HLS
+      onProgress?.call(VideoGenerationStatus.processing, 0.7);
+      onError?.call('Converting to HLS format...');
+      final hlsDirPath = await convertVideoToHLS(tempFile, videoId);
+      
+      // Upload HLS files
+      onProgress?.call(VideoGenerationStatus.processing, 0.8);
+      onError?.call('Uploading HLS files...');
+      hlsUrl = await uploadHLSFiles(hlsDirPath, videoId);
+
       // Clamp generation time between 55-110 seconds
       generationTime = (result['generationTime'] as int).clamp(55, 110);
       
       // Create a video document
-      final videoId = _uuid.v4();
       String finalTitle = prompt;
       String? finalDescription;
       List<String> finalTags = [];
       
-      // Step 1: Generate AI metadata
+      // Generate AI metadata
       try {
-        onProgress?.call(VideoGenerationStatus.processing, 0.8);
+        onProgress?.call(VideoGenerationStatus.processing, 0.9);
         onError?.call('Generating AI content...');
         
         final aiResponse = await _aiCaptionService.generateProjectDetails(
@@ -684,19 +856,20 @@ class VideoService {
         // Continue with defaults
       }
 
-      // Step 2: Create and save video document
+      // Create and save video document
       onProgress?.call(VideoGenerationStatus.processing, 0.95);
       onError?.call('Saving video details...');
       
       final video = Video(
         id: videoId,
-        url: videoUrl,
+        url: videoUrl!,
+        hlsUrl: hlsUrl,
+        thumbnailUrl: thumbnailUrl,
         title: finalTitle,
         description: finalDescription,
         duration: generationTime,
         uploadedAt: DateTime.now(),
         userId: userId,
-        thumbnailUrl: null, // Will be generated by server
         tags: finalTags,
         isAiGenerated: true,
       );
@@ -712,6 +885,209 @@ class VideoService {
       onProgress?.call(VideoGenerationStatus.failed, 0);
       onError?.call('Error: ${e.toString()}');
       throw Exception('Failed to generate and save video: $e');
+    } finally {
+      // Cleanup temporary file
+      try {
+        await tempFile?.delete();
+      } catch (e) {
+        print('Warning: Failed to delete temporary file: $e');
+      }
+    }
+  }
+
+  // Generate thumbnail from video file
+  Future<String?> generateAndUploadThumbnail(File videoFile, String videoId) async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final thumbnailPath = '${tempDir.path}/${videoId}_thumb.jpg';
+      
+      // FFmpeg command to extract first frame
+      final command = '-i ${videoFile.path} -vframes 1 -an -s 1280x720 -ss 0 $thumbnailPath';
+      
+      // Execute FFmpeg command
+      final session = await FFmpegKit.execute(command);
+      final returnCode = await session.getReturnCode();
+
+      if (returnCode?.isValueSuccess() ?? false) {
+        // Upload thumbnail to Firebase Storage
+        final thumbnailFile = File(thumbnailPath);
+        final thumbnailRef = _storage.ref().child('thumbnails/$videoId.jpg');
+        
+        await thumbnailRef.putFile(
+          thumbnailFile,
+          SettableMetadata(contentType: 'image/jpeg'),
+        );
+
+        // Get thumbnail URL
+        final thumbnailUrl = await thumbnailRef.getDownloadURL();
+        
+        // Cleanup
+        try {
+          await thumbnailFile.delete();
+        } catch (e) {
+          print('Warning: Failed to delete temporary thumbnail file: $e');
+        }
+        
+        return thumbnailUrl;
+      } else {
+        final logs = await session.getLogs();
+        throw Exception('FFmpeg thumbnail generation failed: ${logs.join("\n")}');
+      }
+    } catch (e) {
+      print('Error generating thumbnail: $e');
+      return null;
+    }
+  }
+
+  // Batch update existing videos with HLS and metadata
+  Future<void> batchUpdateVideosWithHLSAndMetadata({
+    Function(int total)? onTotalVideos,
+    Function(int current, int total, String status)? onProgress,
+    Function(String videoId, String type, dynamic error)? onError,
+  }) async {
+    try {
+      // Get all videos
+      final videos = await getAllVideos();
+      final total = videos.length;
+      onTotalVideos?.call(total);
+
+      // Process videos in batches to avoid overloading
+      const batchSize = 3; // Small batch size due to intensive processing
+      for (var i = 0; i < videos.length; i += batchSize) {
+        final batch = videos.skip(i).take(batchSize);
+        
+        // Process batch sequentially to avoid memory issues
+        for (var video in batch) {
+          try {
+            final needsHLS = video.hlsUrl == null;
+            final needsMetadata = video.description == null || 
+                                video.description!.isEmpty || 
+                                video.tags.isEmpty;
+            final needsThumbnail = video.thumbnailUrl == null;
+            
+            if (!needsHLS && !needsMetadata && !needsThumbnail) {
+              onProgress?.call(i + 1, total, 'Skipping ${video.title} - already up to date');
+              continue;
+            }
+
+            File? tempFile;
+            String? thumbnailUrl;
+
+            // Download the video if we need HLS or thumbnail
+            if (needsHLS || needsThumbnail) {
+              onProgress?.call(i + 1, total, 'Downloading ${video.title}');
+              
+              // Create temporary file
+              final tempDir = await getTemporaryDirectory();
+              tempFile = File('${tempDir.path}/${video.id}.mp4');
+              
+              try {
+                // Download video
+                final response = await http.get(Uri.parse(video.url));
+                await tempFile.writeAsBytes(response.bodyBytes);
+
+                // Generate thumbnail if needed
+                if (needsThumbnail) {
+                  onProgress?.call(i + 1, total, 'Generating thumbnail for ${video.title}');
+                  thumbnailUrl = await generateAndUploadThumbnail(tempFile, video.id);
+                }
+
+                // Convert to HLS if needed
+                if (needsHLS) {
+                  onProgress?.call(i + 1, total, 'Converting ${video.title} to HLS');
+                  final hlsDirPath = await convertVideoToHLS(tempFile, video.id);
+                  
+                  // Upload HLS files
+                  onProgress?.call(i + 1, total, 'Uploading HLS files for ${video.title}');
+                  final hlsUrl = await uploadHLSFiles(hlsDirPath, video.id);
+
+                  // Update video with HLS URL
+                  await _firestore
+                      .collection('videos')
+                      .doc(video.id)
+                      .update({'hlsUrl': hlsUrl});
+
+                  print('Successfully added HLS for video ${video.id}');
+                  print('HLS URL: $hlsUrl');
+                }
+              } catch (e) {
+                onError?.call(video.id, 'processing', e);
+                print('Error processing video ${video.id}: $e');
+                continue;
+              } finally {
+                // Cleanup temp file
+                try {
+                  await tempFile?.delete();
+                } catch (e) {
+                  print('Warning: Failed to delete temporary file: $e');
+                }
+              }
+            }
+
+            // Update metadata if needed
+            if (needsMetadata) {
+              onProgress?.call(i + 1, total, 'Generating metadata for ${video.title}');
+              
+              try {
+                final aiResponse = await _aiCaptionService.generateProjectDetails(
+                  video.title,
+                  isAiGenerated: true
+                );
+
+                final updates = {
+                  if (video.description == null || video.description!.isEmpty)
+                    'description': aiResponse['description'],
+                  if (video.tags.isEmpty)
+                    'tags': aiResponse['tags'],
+                  if (aiResponse['title'] != null)
+                    'title': aiResponse['title'],
+                };
+
+                if (updates.isNotEmpty) {
+                  await _firestore
+                      .collection('videos')
+                      .doc(video.id)
+                      .update(updates);
+
+                  print('Successfully updated metadata for video ${video.id}');
+                  print('Updates: $updates');
+                }
+              } catch (e) {
+                onError?.call(video.id, 'metadata', e);
+                print('Error updating metadata for video ${video.id}: $e');
+              }
+            }
+
+            // Update thumbnail URL if we generated one
+            if (thumbnailUrl != null) {
+              try {
+                await _firestore
+                    .collection('videos')
+                    .doc(video.id)
+                    .update({'thumbnailUrl': thumbnailUrl});
+                print('Successfully updated thumbnail for video ${video.id}');
+              } catch (e) {
+                onError?.call(video.id, 'thumbnail_update', e);
+                print('Error updating thumbnail URL for video ${video.id}: $e');
+              }
+            }
+
+            onProgress?.call(i + 1, total, 'Completed processing ${video.title}');
+          } catch (e) {
+            onError?.call(video.id, 'general', e);
+            print('Error processing video ${video.id}: $e');
+            // Continue with next video
+          }
+        }
+
+        // Add a delay between batches to avoid rate limiting
+        if (i + batchSize < videos.length) {
+          await Future.delayed(const Duration(seconds: 5));
+        }
+      }
+    } catch (e) {
+      print('Error in batch update: $e');
+      throw Exception('Failed to batch update videos: $e');
     }
   }
 } 

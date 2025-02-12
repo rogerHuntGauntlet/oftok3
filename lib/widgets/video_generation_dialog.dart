@@ -9,6 +9,8 @@ import 'package:flutter/foundation.dart';
 import 'dart:math';
 import '../services/video_generation_service.dart';
 import '../services/user_service.dart';
+import '../services/app_check_service.dart';
+import '../services/platform_config_service.dart';
 import '../models/app_user.dart';
 import './token_purchase_dialog.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -25,7 +27,13 @@ class VideoGenerationDialog extends StatefulWidget {
 class _VideoGenerationDialogState extends State<VideoGenerationDialog> with SingleTickerProviderStateMixin {
   final _speechToText = SpeechToText();
   final _userService = UserService();
-  final _videoGenerationService = VideoGenerationService();
+  final _appCheckService = AppCheckService();
+  final _platformConfig = PlatformConfigService();
+  late final _videoGenerationService = VideoGenerationService(
+    userService: _userService,
+    appCheckService: _appCheckService,
+    platformConfig: _platformConfig,
+  );
   
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
@@ -325,6 +333,12 @@ class _VideoGenerationDialogState extends State<VideoGenerationDialog> with Sing
     });
 
     try {
+      // Test connection first
+      final isConnected = await _videoGenerationService.testConnection();
+      if (!isConnected) {
+        throw Exception('Could not connect to video generation service. Please try again.');
+      }
+
       final result = await _videoGenerationService.generateVideo(
         prompt,
         onProgress: (status, progress) {
@@ -397,7 +411,9 @@ class _VideoGenerationDialogState extends State<VideoGenerationDialog> with Sing
         await _userService.addGeneratedVideo(_currentUser!.id, result['videoId']);
       }
       
-      widget.onVideoGenerated?.call(result['videoUrl']);
+      // Pass back the HLS URL instead of the direct video URL
+      final urlToUse = result['hlsUrl'] ?? result['videoUrl'];
+      widget.onVideoGenerated?.call(urlToUse);
       
       Navigator.of(context).pop();
     } catch (e) {

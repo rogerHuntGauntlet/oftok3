@@ -5,9 +5,19 @@
   "description": "Video generation API for OHFtok",
   "main": "api.js",
   "scripts": {
-    "start": "node generate_video.js"
+    "start": "node generate_video.js",
+    "extract-ffmpeg": "node scripts/extract_ffmpeg.js",
+    "download-ffmpeg": "node scripts/download_ffmpeg.js",
+    "setup-ffmpeg": "npm run download-ffmpeg && npm run extract-ffmpeg"
   },
   "dependencies": {
+    "adm-zip": "^0.5.10",
+    "dotenv": "^16.4.7",
+    "firebase": "^11.3.1",
+    "firebase-admin": "^13.1.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "node-fetch": "^3.3.2",
+    "openai": "^4.83.0",
     "replicate": "^0.25.2"
   }
-} 
+}

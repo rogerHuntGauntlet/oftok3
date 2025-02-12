@@ -5,9 +5,11 @@ class Video {
   final String title;
   final String? description;
   final String url;
+  final String? hlsUrl;
   final String userId;
   final DateTime uploadedAt;
   final String? thumbnailUrl;
+  final String? previewUrl;
   final int duration;
   final List<String> tags;
   final int views;
@@ -23,9 +25,11 @@ class Video {
     required this.title,
     this.description,
     required this.url,
+    this.hlsUrl,
     required this.userId,
     required this.uploadedAt,
     this.thumbnailUrl,
+    this.previewUrl,
     required this.duration,
     List<String>? tags,
     int? views,
@@ -41,9 +45,11 @@ class Video {
       'title': title,
       'description': description,
       'url': url,
+      'hlsUrl': hlsUrl,
       'userId': userId,
       'uploadedAt': uploadedAt.toIso8601String(),
       'thumbnailUrl': thumbnailUrl,
+      'previewUrl': previewUrl,
       'duration': duration,
       'tags': tags,
       'views': views,
@@ -109,6 +115,13 @@ class Video {
       } catch (e) {
         print('Error parsing thumbnailUrl: $e');
       }
+
+      String? previewUrl;
+      try {
+        previewUrl = json['previewUrl']?.toString();
+      } catch (e) {
+        print('Error parsing previewUrl: $e');
+      }
       
       // Handle duration with detailed error logging
       int duration = 0;
@@ -169,14 +182,23 @@ class Video {
         print('Error parsing isAiGenerated: $e');
       }
 
+      String? hlsUrl;
+      try {
+        hlsUrl = json['hlsUrl']?.toString();
+      } catch (e) {
+        print('Error parsing hlsUrl: $e');
+      }
+
       return Video(
         id: id,
         title: title,
         description: description,
         url: url,
+        hlsUrl: hlsUrl,
         userId: userId,
         uploadedAt: uploadedAt,
         thumbnailUrl: thumbnailUrl,
+        previewUrl: previewUrl,
         duration: duration,
         tags: tags,
         views: views,
@@ -196,9 +218,11 @@ class Video {
     String? title,
     String? description,
     String? url,
+    String? hlsUrl,
     String? userId,
     DateTime? uploadedAt,
     String? thumbnailUrl,
+    String? previewUrl,
     int? duration,
     List<String>? tags,
     int? views,
@@ -210,9 +234,11 @@ class Video {
       title: title ?? this.title,
       description: description ?? this.description,
       url: url ?? this.url,
+      hlsUrl: hlsUrl ?? this.hlsUrl,
       userId: userId ?? this.userId,
       uploadedAt: uploadedAt ?? this.uploadedAt,
       thumbnailUrl: thumbnailUrl ?? this.thumbnailUrl,
+      previewUrl: previewUrl ?? this.previewUrl,
       duration: duration ?? this.duration,
       tags: tags ?? this.tags,
       views: views ?? this.views,

@@ -1,13 +1,29 @@
 {
-  "name": "video-generation-api",
+  "name": "ohftok-vercel-api",
   "version": "1.0.0",
-  "private": true,
+  "description": "OHFtok Vercel API endpoints",
+  "main": "index.js",
   "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch"
+  },
   "dependencies": {
-    "replicate": "^0.25.2",
-    "firebase-admin": "^12.0.0",
-    "openai": "^4.28.0",
-    "dotenv": "^16.4.1",
+    "@google-cloud/storage": "^7.7.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "node-fetch": "^3.3.2",
+    "replicate": "^0.25.1",
     "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "@jest/globals": "^29.7.0"
+  },
+  "jest": {
+    "transform": {},
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1"
+    }
   }
 } 

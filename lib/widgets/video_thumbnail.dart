@@ -1,20 +1,71 @@
 import 'package:flutter/material.dart';
+import 'package:visibility_detector/visibility_detector.dart';
 
-class VideoThumbnail extends StatelessWidget {
+class VideoThumbnail extends StatefulWidget {
   final String videoUrl;
   final String? thumbnailUrl;
+  final String? previewUrl;
 
   const VideoThumbnail({
     super.key,
     required this.videoUrl,
     this.thumbnailUrl,
+    this.previewUrl,
   });
 
   @override
+  State<VideoThumbnail> createState() => _VideoThumbnailState();
+}
+
+class _VideoThumbnailState extends State<VideoThumbnail> {
+  bool _isVisible = false;
+
+  @override
   Widget build(BuildContext context) {
-    if (thumbnailUrl != null && thumbnailUrl!.isNotEmpty && thumbnailUrl!.startsWith('http')) {
+    return VisibilityDetector(
+      key: Key('video_${widget.videoUrl}'),
+      onVisibilityChanged: (info) {
+        if (info.visibleFraction > 0.5) {
+          if (!_isVisible) {
+            setState(() {
+              _isVisible = true;
+            });
+          }
+        } else {
+          if (_isVisible) {
+            setState(() {
+              _isVisible = false;
+            });
+          }
+        }
+      },
+      child: _buildContent(),
+    );
+  }
+
+  Widget _buildContent() {
+    // If preview URL exists and video is visible, show the GIF
+    if (_isVisible && widget.previewUrl != null && widget.previewUrl!.isNotEmpty) {
       return Image.network(
-        thumbnailUrl!,
+        widget.previewUrl!,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return _buildThumbnail();
+        },
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return _buildThumbnail();
+        },
+      );
+    }
+    
+    return _buildThumbnail();
+  }
+
+  Widget _buildThumbnail() {
+    if (widget.thumbnailUrl != null && widget.thumbnailUrl!.isNotEmpty && widget.thumbnailUrl!.startsWith('http')) {
+      return Image.network(
+        widget.thumbnailUrl!,
         fit: BoxFit.cover,
         errorBuilder: (context, error, stackTrace) {
           return _buildPlaceholder();

@@ -35,7 +35,18 @@ class _ProjectAnalyticsScreenState extends State<ProjectAnalyticsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Analytics: ${widget.project.name}'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Project Analytics'),
+            Text(
+              widget.project.name,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onPrimary.withOpacity(0.8),
+              ),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -46,10 +57,10 @@ class _ProjectAnalyticsScreenState extends State<ProjectAnalyticsScreen> {
       body: _analytics == null
           ? const Center(child: CircularProgressIndicator())
           : SafeArea(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              child: RefreshIndicator(
+                onRefresh: _loadAnalytics,
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
                   children: [
                     _buildOverviewCards(),
                     const SizedBox(height: 24),
@@ -67,34 +78,43 @@ class _ProjectAnalyticsScreenState extends State<ProjectAnalyticsScreen> {
   Widget _buildOverviewCards() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final crossAxisCount = constraints.maxWidth > 600 ? 4 : 2;
-        return GridView.count(
-          crossAxisCount: crossAxisCount,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 16,
-          crossAxisSpacing: 16,
-          childAspectRatio: 1.5,
+        // Calculate card width based on screen size
+        final screenWidth = constraints.maxWidth;
+        final crossAxisCount = screenWidth > 600 ? 4 : 2;
+        final cardWidth = (screenWidth - (16 * (crossAxisCount + 1))) / crossAxisCount;
+        final cardHeight = cardWidth * 0.7; // Maintain aspect ratio
+
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
           children: [
             _buildMetricCard(
               'Total Sessions',
               _analytics!['totalSessions'].toString(),
               Icons.timer,
+              width: cardWidth,
+              height: cardHeight,
             ),
             _buildMetricCard(
-              'Avg Session Duration',
+              'Avg Session',
               '${(_analytics!['averageSessionDuration'] as Duration).inMinutes}m',
               Icons.access_time,
+              width: cardWidth,
+              height: cardHeight,
             ),
             _buildMetricCard(
-              'Total Engagements',
+              'Engagements',
               widget.project.totalEngagements.toString(),
               Icons.favorite,
+              width: cardWidth,
+              height: cardHeight,
             ),
             _buildMetricCard(
-              'Avg Video Completion',
+              'Video Completion',
               '${(widget.project.averageVideoCompletionRate * 100).toStringAsFixed(1)}%',
               Icons.movie,
+              width: cardWidth,
+              height: cardHeight,
             ),
           ],
         );
@@ -102,33 +122,42 @@ class _ProjectAnalyticsScreenState extends State<ProjectAnalyticsScreen> {
     );
   }
 
-  Widget _buildMetricCard(String title, String value, IconData icon) {
-    return Card(
-      elevation: 4,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 32, color: Theme.of(context).primaryColor),
-            const SizedBox(height: 8),
-            Text(
-              title,
-              style: Theme.of(context).textTheme.titleSmall,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 4),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(
-                value,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+  Widget _buildMetricCard(String title, String value, IconData icon, {required double width, required double height}) {
+    return SizedBox(
+      width: width,
+      height: height,
+      child: Card(
+        elevation: 4,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 20, color: Theme.of(context).primaryColor),
+              const SizedBox(height: 4),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.bodySmall,
                 textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-            ),
-          ],
+              const SizedBox(height: 2),
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    value,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -157,45 +186,77 @@ class _ProjectAnalyticsScreenState extends State<ProjectAnalyticsScreen> {
               child: PieChart(
                 PieChartData(
                   sections: [
-                    PieChartSectionData(
-                      value: widget.project.likeCount.toDouble(),
-                      title: 'Likes\n${widget.project.likeCount}',
-                      color: Colors.red,
-                      radius: 50,
-                      titleStyle: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
+                    if (widget.project.likeCount > 0)
+                      PieChartSectionData(
+                        value: widget.project.likeCount.toDouble(),
+                        title: '${widget.project.likeCount}',
+                        color: Colors.red,
+                        radius: 50,
+                        titleStyle: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    PieChartSectionData(
-                      value: widget.project.commentCount.toDouble(),
-                      title: 'Comments\n${widget.project.commentCount}',
-                      color: Colors.blue,
-                      radius: 50,
-                      titleStyle: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
+                    if (widget.project.commentCount > 0)
+                      PieChartSectionData(
+                        value: widget.project.commentCount.toDouble(),
+                        title: '${widget.project.commentCount}',
+                        color: Colors.blue,
+                        radius: 50,
+                        titleStyle: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    PieChartSectionData(
-                      value: widget.project.shareCount.toDouble(),
-                      title: 'Shares\n${widget.project.shareCount}',
-                      color: Colors.green,
-                      radius: 50,
-                      titleStyle: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
+                    if (widget.project.shareCount > 0)
+                      PieChartSectionData(
+                        value: widget.project.shareCount.toDouble(),
+                        title: '${widget.project.shareCount}',
+                        color: Colors.green,
+                        radius: 50,
+                        titleStyle: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
                   ],
                   sectionsSpace: 2,
                   centerSpaceRadius: 40,
                 ),
               ),
             ),
+            const SizedBox(height: 16),
+            // Legend
+            Wrap(
+              spacing: 16,
+              runSpacing: 8,
+              children: [
+                _buildLegendItem('Likes', Colors.red, widget.project.likeCount),
+                _buildLegendItem('Comments', Colors.blue, widget.project.commentCount),
+                _buildLegendItem('Shares', Colors.green, widget.project.shareCount),
+              ],
+            ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildLegendItem(String label, Color color, int value) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text('$label: $value'),
+      ],
     );
   }
 
@@ -219,20 +280,26 @@ class _ProjectAnalyticsScreenState extends State<ProjectAnalyticsScreen> {
             ...widget.project.videoCompletionRates.entries.map((entry) {
               final completionRate = entry.value * 100;
               return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.only(bottom: 16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       'Video ${entry.key}',
                       style: Theme.of(context).textTheme.titleSmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 4),
-                    LinearProgressIndicator(
-                      value: entry.value,
-                      backgroundColor: Colors.grey[200],
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        Theme.of(context).primaryColor,
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: entry.value,
+                        backgroundColor: Colors.grey[200],
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Theme.of(context).primaryColor,
+                        ),
+                        minHeight: 8,
                       ),
                     ),
                     const SizedBox(height: 4),

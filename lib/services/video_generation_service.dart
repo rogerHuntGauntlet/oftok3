@@ -53,17 +53,26 @@ class VideoGenerationService {
   final UserService? _userService;
   final AppCheckService? _appCheckService;
   final PlatformConfigService _platformConfig;
+  final http.Client _client;
 
   VideoGenerationService({
     UserService? userService, 
     AppCheckService? appCheckService,
-    PlatformConfigService? platformConfig
+    PlatformConfigService? platformConfig,
+    http.Client? httpClient,
   })  : _userService = userService,
         _appCheckService = appCheckService,
-        _platformConfig = platformConfig ?? PlatformConfigService();
+        _platformConfig = platformConfig ?? PlatformConfigService(),
+        _client = httpClient ?? http.Client();
 
   Future<Map<String, String>> get _headers async {
-    final apiSecretKey = const String.fromEnvironment('API_SECRET_KEY');
+    final apiSecretKey = dotenv.env['API_SECRET_KEY'];
+    if (apiSecretKey == null) {
+      throw VideoGenerationException(
+        'API_SECRET_KEY not found in environment',
+        code: 'CONFIG_ERROR'
+      );
+    }
     return {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer $apiSecretKey',
@@ -76,32 +85,37 @@ class VideoGenerationService {
     while (attempts < _maxRetryAttempts) {
       try {
         print('Testing connection to $_baseUrl (Attempt ${attempts + 1})');
-        final response = await http.get(
+        
+        final response = await _client.get(
           Uri.parse(_baseUrl),
           headers: await _headers,
         ).timeout(const Duration(seconds: 10));
         
         print('Response status code: ${response.statusCode}');
-        print('Response body: ${response.body}');
         
         if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          print('Server response: $data');
+          print('Connection test successful');
           return true;
         }
         
+        print('Unexpected status code: ${response.statusCode}');
         attempts++;
         if (attempts < _maxRetryAttempts) {
+          print('Retrying in ${_initialRetryDelay.inSeconds * (1 << attempts)} seconds...');
           await Future.delayed(_initialRetryDelay * (1 << attempts));
         }
-      } catch (e) {
-        print('Connection test failed: $e');
+      } catch (e, stackTrace) {
+        print('Connection test failed:');
+        print('Error: $e');
+        print('Stack trace: $stackTrace');
         attempts++;
         if (attempts < _maxRetryAttempts) {
+          print('Retrying in ${_initialRetryDelay.inSeconds * (1 << attempts)} seconds...');
           await Future.delayed(_initialRetryDelay * (1 << attempts));
         }
       }
     }
+    print('All connection attempts failed');
     return false;
   }
 
@@ -118,8 +132,8 @@ class VideoGenerationService {
       onError?.call('Starting video generation...');
 
       // Start video generation
-      final response = await http.post(
-        Uri.parse('$_baseUrl'),
+      final response = await _client.post(
+        Uri.parse(_baseUrl),
         headers: await _headers,
         body: jsonEncode({'prompt': prompt}),
       ).timeout(const Duration(seconds: 10));
@@ -147,133 +161,91 @@ class VideoGenerationService {
 
       final predictionId = data['id'];
       String? videoUrl;
+      String? hlsUrl;
+      String? thumbnailUrl;
+      String? previewUrl;
+      bool isModeratedContent = false;
 
       // Poll for completion
       while (stopwatch.elapsed < _maxGenerationTime) {
-        try {
-          final statusResponse = await http.get(
-            Uri.parse('$_baseUrl?id=$predictionId'),
-            headers: await _headers,
-          ).timeout(const Duration(seconds: 10));
+        pollCount++;
+        await Future.delayed(_pollInterval);
 
-          if (statusResponse.statusCode != 200) {
-            throw VideoGenerationException(
-              'Failed to check video status',
-              code: 'STATUS_CHECK_FAILED',
-              details: statusResponse.statusCode,
-              statusCode: statusResponse.statusCode,
-              responseBody: statusResponse.body
-            );
-          }
+        final pollResponse = await _client.get(
+          Uri.parse('$_baseUrl?id=$predictionId'),
+          headers: await _headers,
+        );
 
-          final statusData = jsonDecode(statusResponse.body) as Map<String, dynamic>;
-          
-          if (!statusData['success']) {
-            throw VideoGenerationException(
-              'Video generation failed',
-              code: 'GENERATION_FAILED',
-              details: statusData['error'],
-              statusCode: statusResponse.statusCode,
-              responseBody: statusResponse.body
-            );
-          }
-
-          final status = statusData['status'];
-          pollCount++;
-          final timeProgress = stopwatch.elapsed.inMilliseconds / _maxGenerationTime.inMilliseconds;
-          final progress = 0.1 + (timeProgress * 0.7); // Scale from 10% to 80%
-          
-          final elapsedSeconds = stopwatch.elapsed.inSeconds;
-          final estimatedTotalSeconds = (elapsedSeconds / progress).round();
-          final remainingSeconds = estimatedTotalSeconds - elapsedSeconds;
-          
-          onProgress?.call(
-            VideoGenerationStatus.values.firstWhere(
-              (s) => s.toString().split('.').last == status,
-              orElse: () => VideoGenerationStatus.processing
-            ),
-            progress.clamp(0.0, 1.0)
-          );
-          
-          onError?.call(
-            'Generating video... ${(progress * 100).round()}%\n'
-            'Time elapsed: ${elapsedSeconds}s\n'
-            'Estimated time remaining: ${remainingSeconds}s'
-          );
-          
-          if (status == 'succeeded') {
-            videoUrl = statusData['output'];
-            break;
-          } else if (status == 'failed') {
-            throw VideoGenerationException(
-              'Video generation failed',
-              code: 'GENERATION_FAILED',
-              details: statusData['error'],
-              statusCode: statusResponse.statusCode,
-              responseBody: statusResponse.body
-            );
-          }
-        } catch (e) {
-          if (e is! VideoGenerationException) {
-            onError?.call('Status check failed, retrying...');
-            print('Status check error: $e');
-            await Future.delayed(const Duration(seconds: 1));
-            continue;
-          }
-          rethrow;
+        if (pollResponse.statusCode != 200) {
+          onError?.call('Error checking generation status');
+          continue;
         }
 
-        await Future.delayed(_pollInterval);
+        final pollData = jsonDecode(pollResponse.body) as Map<String, dynamic>;
+        final status = pollData['status'] as String;
+        final progress = pollData['progress'] as double? ?? 0.0;
+
+        // Update progress
+        if (status == 'processing') {
+          onProgress?.call(VideoGenerationStatus.processing, 0.1 + (progress * 0.8));
+          onError?.call(pollData['statusMessage'] ?? 'Processing video...');
+        }
+
+        if (status == 'failed') {
+          throw VideoGenerationException(
+            'Video generation failed',
+            code: 'GENERATION_FAILED',
+            details: pollData['error']
+          );
+        }
+
+        if (status == 'succeeded') {
+          videoUrl = pollData['videoUrl'] as String?;
+          hlsUrl = pollData['hlsUrl'] as String?;
+          thumbnailUrl = pollData['thumbnailUrl'] as String?;
+          previewUrl = pollData['previewUrl'] as String?;
+          isModeratedContent = pollData['isModeratedContent'] as bool? ?? false;
+          
+          if (videoUrl == null && !isModeratedContent) {
+            throw VideoGenerationException(
+              'Video generation completed but no URL was provided',
+              code: 'NO_URL'
+            );
+          }
+          break;
+        }
       }
 
-      if (videoUrl == null) {
+      if (stopwatch.elapsed >= _maxGenerationTime) {
         throw VideoGenerationException(
           'Video generation timed out',
-          code: 'TIMEOUT',
-          details: 'Generation exceeded $_maxGenerationTime'
+          code: 'TIMEOUT'
         );
       }
 
-      // Update metadata through Vercel API
-      onProgress?.call(VideoGenerationStatus.processing, 0.9);
-      onError?.call('Updating video metadata...');
-
-      final metadataResponse = await http.post(
-        Uri.parse('${_baseUrl.replaceAll('/api', '/api/metadata')}'),
-        headers: await _headers,
-        body: jsonEncode({
-          'videoId': predictionId,
-          'title': prompt,
-          'isAiGenerated': true
-        }),
-      ).timeout(const Duration(seconds: 10));
-
-      if (metadataResponse.statusCode != 200) {
-        print('Warning: Failed to update metadata: ${metadataResponse.statusCode}');
-        print('Response: ${metadataResponse.body}');
-      }
-
       onProgress?.call(VideoGenerationStatus.succeeded, 1.0);
-      final generationTime = stopwatch.elapsed.inSeconds;
-      onError?.call('Video generated successfully in ${generationTime}s!');
-      
+      onError?.call('Video generation complete!');
+
       return {
         'success': true,
         'videoUrl': videoUrl,
-        'generationTime': generationTime,
-        'pollCount': pollCount,
+        'hlsUrl': hlsUrl,
+        'thumbnailUrl': thumbnailUrl,
+        'previewUrl': previewUrl,
+        'videoId': predictionId,
+        'isModeratedContent': isModeratedContent,
+        'rickRollUrl': isModeratedContent ? _rickRollUrl : null,
+        'generationTime': stopwatch.elapsed.inSeconds,
       };
-
     } catch (e) {
-      onProgress?.call(VideoGenerationStatus.failed, 1.0);
+      print('Error in generateVideo: $e');
+      onProgress?.call(VideoGenerationStatus.failed, 0);
       if (e is VideoGenerationException) {
-        onError?.call('Generation failed: ${e.message}');
-        rethrow;
+        throw e;
       }
-      onError?.call('Unexpected error: $e');
       throw VideoGenerationException(
-        'Unexpected error during video generation',
-        code: 'UNEXPECTED_ERROR',
+        'Failed to generate video',
+        code: 'UNKNOWN',
         details: e.toString()
       );
     }
