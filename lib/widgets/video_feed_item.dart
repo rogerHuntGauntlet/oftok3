@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import '../services/video/video_player_provider.dart';
 import '../services/video/media_kit_player_service.dart';
 import '../services/video/video_player_service.dart';
@@ -18,70 +19,167 @@ class VideoFeedItem extends StatefulWidget {
   final bool autoPlay;
 
   const VideoFeedItem({
-    Key? key,
+    super.key,
     required this.videoUrl,
     required this.videoId,
     required this.projectName,
     required this.projectId,
     this.preloadedPlayer,
     this.autoPlay = true,
-  }) : super(key: key);
+  });
 
   @override
   State<VideoFeedItem> createState() => _VideoFeedItemState();
 }
 
-class _VideoFeedItemState extends State<VideoFeedItem> {
-  late final VideoPlayerProvider _provider;
-  final ProjectService _projectService = ProjectService();
+class _VideoFeedItemState extends State<VideoFeedItem> with WidgetsBindingObserver {
+  VideoPlayerService? _player;
   bool _isInitialized = false;
-  String? _error;
+  bool _hasError = false;
+  String? _errorMessage;
+  bool _isDisposed = false;
+  bool _isPaused = false;
+  final ProjectService _projectService = ProjectService();
   bool _hasTrackedView = false;
 
   @override
   void initState() {
     super.initState();
-    _provider = VideoPlayerProvider(
-      factory: MediaKitPlayerFactory(),
-      onError: _handleError,
-    );
+    WidgetsBinding.instance.addObserver(this);
     _initializePlayer();
   }
 
-  Future<void> _initializePlayer() async {
-    try {
-      await _provider.initializeVideo(
-        widget.videoUrl,
-        preloadedPlayer: widget.preloadedPlayer,
-      );
-      if (mounted) {
-        setState(() => _isInitialized = true);
-      }
-    } catch (e) {
-      _handleError(e.toString());
+  @override
+  void didUpdateWidget(VideoFeedItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.videoUrl != widget.videoUrl ||
+        oldWidget.autoPlay != widget.autoPlay) {
+      _cleanupPlayer();
+      _initializePlayer();
+    } else if (oldWidget.autoPlay != widget.autoPlay) {
+      _handleAutoPlayChange();
     }
   }
 
-  void _handleError(String error) {
-    if (!mounted) return;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_isDisposed) return;
     
-    setState(() => _error = error);
-    
-    // Show error to user
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Video playback error: $error'),
-        backgroundColor: Colors.red,
-        duration: const Duration(seconds: 3),
-        action: SnackBarAction(
-          label: 'Retry',
-          onPressed: () {
-            setState(() => _error = null);
-            _initializePlayer();
-          },
-        ),
-      ),
-    );
+    switch (state) {
+      case AppLifecycleState.paused:
+        _pauseVideo();
+        break;
+      case AppLifecycleState.resumed:
+        if (widget.autoPlay && !_isPaused) {
+          _resumeVideo();
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  Future<void> _initializePlayer() async {
+    if (_isDisposed) return;
+
+    try {
+      setState(() {
+        _isInitialized = false;
+        _hasError = false;
+        _errorMessage = null;
+      });
+
+      // Use preloaded player if available, otherwise create new one
+      _player = widget.preloadedPlayer ?? MediaKitPlayerService();
+      
+      // Initialize with retry logic
+      int attempts = 0;
+      const maxAttempts = 3;
+      
+      while (attempts < maxAttempts && !_isDisposed) {
+        try {
+          await _player?.initialize(widget.videoUrl);
+          break;
+        } catch (e) {
+          attempts++;
+          if (attempts == maxAttempts) {
+            throw e;
+          }
+          await Future.delayed(Duration(seconds: attempts));
+        }
+      }
+
+      if (_isDisposed) return;
+
+      setState(() {
+        _isInitialized = true;
+      });
+
+      if (widget.autoPlay && !_isPaused) {
+        await _player?.play();
+      }
+    } catch (e) {
+      print('Error initializing video player: $e');
+      if (!_isDisposed) {
+        setState(() {
+          _hasError = true;
+          _errorMessage = 'Failed to load video: ${e.toString()}';
+        });
+      }
+    }
+  }
+
+  Future<void> _cleanupPlayer() async {
+    try {
+      await _player?.pause();
+      if (_player != widget.preloadedPlayer) {
+        await _player?.dispose();
+      }
+      _player = null;
+    } catch (e) {
+      print('Error cleaning up player: $e');
+    }
+  }
+
+  Future<void> _handleAutoPlayChange() async {
+    if (_isDisposed || !_isInitialized) return;
+
+    try {
+      if (widget.autoPlay && !_isPaused) {
+        await _player?.play();
+      } else {
+        await _player?.pause();
+      }
+    } catch (e) {
+      print('Error handling autoplay change: $e');
+    }
+  }
+
+  Future<void> _pauseVideo() async {
+    if (_isDisposed || !_isInitialized) return;
+    try {
+      _isPaused = true;
+      await _player?.pause();
+    } catch (e) {
+      print('Error pausing video: $e');
+    }
+  }
+
+  Future<void> _resumeVideo() async {
+    if (_isDisposed || !_isInitialized) return;
+    try {
+      _isPaused = false;
+      if (widget.autoPlay) {
+        await _player?.play();
+      }
+    } catch (e) {
+      print('Error resuming video: $e');
+    }
+  }
+
+  Future<void> _retryInitialization() async {
+    await _cleanupPlayer();
+    await _initializePlayer();
   }
 
   void _showComments(BuildContext context) {
@@ -127,111 +225,102 @@ class _VideoFeedItemState extends State<VideoFeedItem> {
 
   @override
   void dispose() {
-    _provider.dispose();
+    _isDisposed = true;
+    WidgetsBinding.instance.removeObserver(this);
+    _cleanupPlayer();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider.value(
-      value: _provider,
-      child: Consumer<VideoPlayerProvider>(
-        builder: (context, provider, child) {
-          if (!_isInitialized && _error == null) {
-            return const Center(
-              child: CircularProgressIndicator(),
-            );
-          }
+    if (_hasError) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              _errorMessage ?? 'Error loading video',
+              style: const TextStyle(color: Colors.red),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _retryInitialization,
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
 
-          if (_error != null) {
-            return Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.error_outline,
-                    color: Colors.red,
-                    size: 48,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Failed to load video',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  ElevatedButton(
-                    onPressed: () {
-                      setState(() => _error = null);
-                      _initializePlayer();
-                    },
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            );
-          }
+    if (!_isInitialized) {
+      return const Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+        ),
+      );
+    }
 
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              VideoPlayerWidget(
-                key: ValueKey(widget.videoUrl),
-                videoUrl: widget.videoUrl,
-                autoPlay: widget.autoPlay,
-                showControls: true,
-                preloadedPlayer: widget.preloadedPlayer,
-                onVideoStarted: _onVideoStarted,
-              ),
-              // Project name header
-              Positioned(
-                top: MediaQuery.of(context).padding.top + 16,
-                left: 16,
-                right: 16,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    widget.projectName,
-                    style: const TextStyle(
+    final mediaKitPlayer = _player as MediaKitPlayerService?;
+    final videoController = mediaKitPlayer?.videoController;
+    
+    if (videoController == null) {
+      return const Center(
+        child: Text(
+          'Video player not ready',
+          style: TextStyle(color: Colors.white),
+        ),
+      );
+    }
+
+    return GestureDetector(
+      onTap: () async {
+        if (_isDisposed) return;
+        
+        final isPlaying = await _player?.isPlaying ?? false;
+        if (isPlaying) {
+          await _pauseVideo();
+        } else {
+          await _resumeVideo();
+        }
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Container(
+            color: Colors.black,
+            child: Video(
+              controller: videoController,
+              controls: NoVideoControls,
+              fit: BoxFit.cover,
+            ),
+          ),
+          StreamBuilder<bool>(
+            stream: _player?.playingStream,
+            builder: (context, snapshot) {
+              final isPlaying = snapshot.data ?? false;
+              if (!isPlaying && !_isPaused) {
+                return Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.5),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow,
                       color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
+                      size: 48,
                     ),
-                    textAlign: TextAlign.center,
                   ),
-                ),
-              ),
-              // Interaction buttons (Comments and Save)
-              Positioned(
-                right: 16,
-                bottom: MediaQuery.of(context).padding.bottom + 16,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.comment, color: Colors.white),
-                      onPressed: () => _showComments(context),
-                    ),
-                    const SizedBox(height: 8),
-                    SaveButton(
-                      videoId: widget.videoId,
-                      projectId: widget.projectId,
-                      initialSaveState: true,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          );
-        },
+                );
+              }
+              return const SizedBox.shrink();
+            },
+          ),
+        ],
       ),
     );
   }

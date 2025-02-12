@@ -3,14 +3,25 @@
   "public": true,
   "builds": [
     {
-      "src": "api-deploy/api/genVid.js",
+      "src": "api/*.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
+      "src": "/api/metadata",
+      "dest": "api/metadata.js",
+      "methods": ["POST", "OPTIONS"],
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Credentials": "true"
+      }
+    },
+    {
       "src": "/(.*)",
-      "dest": "/api-deploy/api/genVid.js",
+      "dest": "api/index.js",
       "methods": ["GET", "POST", "OPTIONS"],
       "headers": {
         "Access-Control-Allow-Origin": "*",
@@ -19,8 +30,5 @@
         "Access-Control-Allow-Credentials": "true"
       }
     }
-  ],
-  "env": {
-    "VERCEL_FORCE_NO_BUILD_CACHE": "1"
-  }
+  ]
 } 

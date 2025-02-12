@@ -6,23 +6,28 @@ class AppUser {
   final String displayName;
   final String email;
   final String? photoUrl;
+  final String? bio;
   final bool isAuthenticated;
   final DateTime createdAt;
   final DateTime updatedAt;
   final int tokens;
+  final List<String> generatedVideoIds;
 
   AppUser({
     required this.id,
     required this.displayName,
     required this.email,
     this.photoUrl,
+    this.bio,
     this.isAuthenticated = true,
     DateTime? createdAt,
     DateTime? updatedAt,
     this.tokens = 1000,
+    List<String>? generatedVideoIds,
   }) : 
     this.createdAt = createdAt ?? DateTime.now(),
-    this.updatedAt = updatedAt ?? DateTime.now();
+    this.updatedAt = updatedAt ?? DateTime.now(),
+    this.generatedVideoIds = generatedVideoIds ?? [];
 
   Map<String, dynamic> toJson() {
     return {
@@ -30,10 +35,12 @@ class AppUser {
       'displayName': displayName,
       'email': email,
       'photoUrl': photoUrl,
+      'bio': bio,
       'isAuthenticated': isAuthenticated,
       'tokens': tokens,
       'createdAt': createdAt,
       'updatedAt': updatedAt,
+      'generatedVideoIds': generatedVideoIds,
     };
   }
 
@@ -59,20 +66,37 @@ class AppUser {
     // Use document ID if available, otherwise try to find id/uid in the data
     String userId = documentId ?? json['uid'] ?? json['id'] ?? 
       (throw Exception('No id found in user data'));
+
+    // Handle timestamps safely
+    DateTime? createdAt;
+    if (json['createdAt'] != null) {
+      if (json['createdAt'] is Timestamp) {
+        createdAt = (json['createdAt'] as Timestamp).toDate();
+      } else if (json['createdAt'] is String) {
+        createdAt = DateTime.tryParse(json['createdAt'] as String);
+      }
+    }
+
+    DateTime? updatedAt;
+    if (json['updatedAt'] != null) {
+      if (json['updatedAt'] is Timestamp) {
+        updatedAt = (json['updatedAt'] as Timestamp).toDate();
+      } else if (json['updatedAt'] is String) {
+        updatedAt = DateTime.tryParse(json['updatedAt'] as String);
+      }
+    }
     
     return AppUser(
       id: userId,
       displayName: json['displayName'] as String? ?? 'User',
       email: json['email'] as String? ?? '',
       photoUrl: (json['photoURL'] ?? json['photoUrl']) as String?,
+      bio: json['bio'] as String?,
       isAuthenticated: json['isAuthenticated'] as bool? ?? true,
       tokens: tokenCount,
-      createdAt: json['createdAt'] != null 
-        ? (json['createdAt'] as Timestamp).toDate()
-        : null,
-      updatedAt: json['updatedAt'] != null
-        ? (json['updatedAt'] as Timestamp).toDate()
-        : null,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      generatedVideoIds: List<String>.from(json['generatedVideoIds'] ?? []),
     );
   }
 
@@ -84,6 +108,7 @@ class AppUser {
       photoUrl: user.photoURL,
       isAuthenticated: true,
       tokens: 1000,
+      generatedVideoIds: [],
     );
   }
 } 

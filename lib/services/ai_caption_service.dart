@@ -72,28 +72,37 @@ class AICaptionService {
   }
 
   // Generate project title and description from voice transcript
-  Future<Map<String, dynamic>> generateProjectDetails(String voiceTranscript) async {
+  Future<Map<String, dynamic>> generateProjectDetails(String prompt, {bool isAiGenerated = false}) async {
     try {
+      final systemPrompt = isAiGenerated
+        ? "You are a creative video title and description generator specializing in AI-generated content. Your goal is to create viral-worthy, attention-grabbing titles and descriptions that highlight the unique and creative aspects of AI-generated videos. Format your response as JSON with:\n"
+          "- title: create a catchy, compelling title that emphasizes the video's unique AI-generated nature (max 50 chars)\n"
+          "- description: write an engaging description that explains the AI-generated content and hooks viewers (max 200 chars)\n"
+          "- tags: list of relevant trending hashtags including AI-related tags (max 5 tags)\n\n"
+          "Make the title and description creative, intriguing, and optimized for social media engagement. Focus on the innovative and artistic aspects of AI generation."
+        : "You are a creative video title and description generator. Your goal is to create engaging, attention-grabbing titles and descriptions for social media videos. Format your response as JSON with:\n"
+          "- title: create a catchy, compelling title that makes viewers want to watch (max 50 chars)\n"
+          "- description: write an engaging description that expands on the title and hooks viewers (max 200 chars)\n"
+          "- tags: list of relevant trending hashtags and topics (max 5 tags)\n\n"
+          "Make the title and description creative, intriguing, and optimized for social media engagement. Avoid generic descriptions.";
+
+      final userPrompt = isAiGenerated
+        ? "Generate a viral-worthy title, description, and tags for this AI-generated video. The generation prompt was: $prompt"
+        : "Generate a title, description, and tags for this video prompt: $prompt";
+
       final response = await OpenAI.instance.chat.create(
-        model: "gpt-3.5-turbo",
+        model: "gpt-4",
         messages: [
           OpenAIChatCompletionChoiceMessageModel(
             role: OpenAIChatMessageRole.system,
             content: [
-              OpenAIChatCompletionChoiceMessageContentItemModel.text(
-                "You are a helpful assistant that generates concise project titles, descriptions, and tags. Format your response as JSON with the following fields:\n"
-                "- title: catchy and brief (max 50 chars)\n"
-                "- description: informative but concise (max 200 chars)\n"
-                "- tags: list of relevant keywords and topics (max 5 tags)",
-              ),
+              OpenAIChatCompletionChoiceMessageContentItemModel.text(systemPrompt),
             ],
           ),
           OpenAIChatCompletionChoiceMessageModel(
             role: OpenAIChatMessageRole.user,
             content: [
-              OpenAIChatCompletionChoiceMessageContentItemModel.text(
-                "Generate a title, description, and tags from this transcript: $voiceTranscript",
-              ),
+              OpenAIChatCompletionChoiceMessageContentItemModel.text(userPrompt),
             ],
           ),
         ],
@@ -111,23 +120,23 @@ class AICaptionService {
           jsonDecode(cleanJson) as Map,
         );
         return {
-          'title': result['title'] as String? ?? 'New Project',
-          'description': result['description'] as String? ?? voiceTranscript,
+          'title': result['title'] as String? ?? 'New Video',
+          'description': result['description'] as String? ?? prompt,
           'tags': (result['tags'] as List<dynamic>?)?.cast<String>() ?? <String>[],
         };
       } catch (e) {
         print('Error parsing AI response: $e');
         return {
-          'title': 'New Project',
-          'description': voiceTranscript,
+          'title': 'New Video',
+          'description': prompt,
           'tags': <String>[],
         };
       }
     } catch (e) {
       print('Error generating project details: $e');
       return {
-        'title': 'New Project',
-        'description': voiceTranscript,
+        'title': 'New Video',
+        'description': prompt,
         'tags': <String>[],
       };
     }

@@ -20,6 +20,8 @@ import '../widgets/app_bottom_navigation.dart';
 import '../services/social_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../screens/project_analytics_screen.dart';
+import '../services/analytics_service.dart';
+import 'package:http/http.dart' as http;
 
 class ProjectDetailsScreen extends StatefulWidget {
   final Project project;
@@ -40,20 +42,28 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   final _projectService = ProjectService();
   final _userService = UserService();
   final _socialService = SocialService();
+  final _analyticsService = AnalyticsService();
   final _imagePicker = ImagePicker();
   final _searchController = TextEditingController();
   final _commentController = TextEditingController();
+  final _firestore = FirebaseFirestore.instance;
   bool _isLoading = false;
   double _uploadProgress = 0;
   late Stream<Project?> _projectStream;
   Video? _draggedVideo;
   DateTime? _sessionStartTime;
+  String? _progressStatus;
+  double? _progressValue;
 
   @override
   void initState() {
     super.initState();
     
     // Initialize the project stream with error handling and trigger immediate load
+    _initializeProjectStream();
+  }
+
+  void _initializeProjectStream() {
     _projectStream = _projectService
         .getProjectStream(widget.project.id)
         .handleError((error) {
@@ -66,7 +76,8 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
               ),
             );
           }
-        });
+        })
+        .asBroadcastStream();  // Make sure it's a broadcast stream from the start
 
     // Force immediate data load and start session tracking
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -75,13 +86,6 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       
       // Start session tracking
       _sessionStartTime = DateTime.now();
-      
-      // Force stream to emit current value
-      if (mounted) {
-        setState(() {
-          _projectStream = _projectStream.asBroadcastStream();
-        });
-      }
     });
   }
 
@@ -153,7 +157,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     }
   }
 
-  Future<void> _viewVideos(String projectId) async {
+  Future<void> _viewVideos(String projectId, {int startIndex = 0}) async {
     try {
       final videos = await _videoService.getProjectVideos(widget.project.videoIds);
       if (!mounted) return;
@@ -166,6 +170,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
             videoIds: videos.map((v) => v.id).toList(),
             projectName: widget.project.name,
             preloadService: widget.preloadService,
+            initialIndex: startIndex,
           ),
         ),
       );
@@ -835,12 +840,18 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                     // Social stats with animations
                     Row(
                       children: [
-                        _buildSocialStat(
-                          icon: Icons.favorite,
-                          count: project.likeCount,
-                          label: 'Likes',
-                          color: Colors.pink,
-                          isActive: project.favoritedBy.contains(currentUser?.uid),
+                        StreamBuilder<bool>(
+                          stream: _socialService.getLikeStatus(project.id),
+                          builder: (context, likeSnapshot) {
+                            final isLiked = likeSnapshot.data ?? false;
+                            return _buildSocialStat(
+                              icon: Icons.favorite,
+                              count: project.likeCount,
+                              label: 'Likes',
+                              color: Colors.pink,
+                              isActive: isLiked,
+                            );
+                          }
                         ),
                         const SizedBox(width: 24),
                         _buildSocialStat(
@@ -858,13 +869,10 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    StreamBuilder<Project?>(
-                      stream: _projectStream,
-                      builder: (context, snapshot) {
-                        final isLiked = snapshot.hasData && 
-                          currentUser != null && 
-                          snapshot.data!.favoritedBy.contains(currentUser.uid);
-                        
+                    StreamBuilder<bool>(
+                      stream: _socialService.getLikeStatus(project.id),
+                      builder: (context, likeSnapshot) {
+                        final isLiked = likeSnapshot.data ?? false;
                         return _buildSocialButton(
                           icon: isLiked ? Icons.favorite : Icons.favorite_border,
                           label: isLiked ? 'Liked' : 'Like',
@@ -873,22 +881,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                             if (currentUser != null) {
                               try {
                                 await _socialService.toggleLike(project.id);
-                                // Force refresh of project stream to update UI
-                                setState(() {
-                                  _projectStream = _projectService
-                                      .getProjectStream(widget.project.id)
-                                      .handleError((error) {
-                                        print('Error in project stream: $error');
-                                        if (mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(
-                                              content: Text('Error loading project: $error'),
-                                              backgroundColor: Colors.red,
-                                            ),
-                                          );
-                                        }
-                                      });
-                                });
+                                
+                                // Don't track likes in analytics as it's handled by social service
+                                // Only track other interactions
+                                // if (!isLiked) {
+                                //   await _analyticsService.trackInteraction(project.id, 'like');
+                                // }
+                                
                               } catch (e) {
                                 if (mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
@@ -996,6 +995,11 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     bool isActive = false,
     required VoidCallback onPressed,
   }) {
+    // Use filled heart icon when active and icon is favorite
+    final IconData displayIcon = icon == Icons.favorite 
+        ? (isActive ? Icons.favorite : Icons.favorite_border)
+        : icon;
+
     return Container(
       decoration: BoxDecoration(
         gradient: isActive ? LinearGradient(
@@ -1031,7 +1035,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  icon == Icons.favorite && isActive ? Icons.favorite : icon,
+                  displayIcon,
                   color: isActive ? Colors.white : Colors.pink,
                   size: 20,
                 ),
@@ -1164,63 +1168,37 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                       itemBuilder: (context, index) {
                         final comment = comments[index].data() as Map<String, dynamic>;
                         return FutureBuilder<AppUser?>(
-                          future: _userService.getUser(comment['userId'] as String),
-                          builder: (context, userSnapshot) {
-                            final user = userSnapshot.data;
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 16),
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    Theme.of(context).colorScheme.surface,
-                                    Theme.of(context).colorScheme.surface.withOpacity(0.9),
-                                  ],
-                                ),
-                                borderRadius: BorderRadius.circular(12),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.1),
-                                    blurRadius: 4,
-                                    spreadRadius: 0,
-                                  ),
-                                ],
+                          future: _userService.getUser(comment['userId']),
+                          builder: (context, snapshot) {
+                            if (snapshot.hasError) {
+                              return const ListTile(
+                                title: Text('Error loading user'),
+                              );
+                            }
+
+                            final user = snapshot.data;
+                            if (user == null) {
+                              return const ListTile(
+                                title: Text('User not found'),
+                              );
+                            }
+
+                            return ListTile(
+                              leading: CircleAvatar(
+                                backgroundImage: user.photoUrl != null 
+                                  ? NetworkImage(user.photoUrl!) 
+                                  : null,
+                                child: user.photoUrl == null 
+                                  ? Text(user.displayName[0].toUpperCase()) 
+                                  : null,
                               ),
-                              child: ListTile(
-                                contentPadding: const EdgeInsets.all(12),
-                                leading: CircleAvatar(
-                                  radius: 24,
-                                  backgroundColor: Theme.of(context).colorScheme.primary,
-                                  child: Text(
-                                    user?.displayName.substring(0, 1).toUpperCase() ?? '?',
-                                    style: TextStyle(
-                                      color: Theme.of(context).colorScheme.onPrimary,
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                                title: Row(
-                                  children: [
-                                    Text(
-                                      user?.displayName ?? 'Unknown User',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      _formatTimestamp(comment['timestamp'] as Timestamp),
-                                      style: Theme.of(context).textTheme.bodySmall,
-                                    ),
-                                  ],
-                                ),
-                                subtitle: Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: Text(
-                                    comment['comment'] as String,
-                                    style: const TextStyle(fontSize: 16),
-                                  ),
-                                ),
+                              title: Text(user.displayName),
+                              subtitle: Text(_formatTimestamp(comment['timestamp'])),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.more_vert),
+                                onPressed: () {
+                                  // Show comment options
+                                },
                               ),
                             );
                           },
@@ -1286,8 +1264,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                         onPressed: () {
                           final comment = _commentController.text.trim();
                           if (comment.isNotEmpty) {
-                            _socialService.addComment(widget.project.id, comment);
-                            _commentController.clear();
+                            _postComment();
                           }
                         },
                       ),
@@ -1302,9 +1279,21 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     );
   }
 
-  String _formatTimestamp(Timestamp timestamp) {
+  String _formatTimestamp(dynamic timestamp) {
+    if (timestamp == null) return 'No date';
+    
+    DateTime? date;
+    if (timestamp is Timestamp) {
+      date = timestamp.toDate();
+    } else if (timestamp is DateTime) {
+      date = timestamp;
+    } else if (timestamp is String) {
+      date = DateTime.tryParse(timestamp);
+    }
+    
+    if (date == null) return 'Invalid date';
+    
     final now = DateTime.now();
-    final date = timestamp.toDate();
     final difference = now.difference(date);
 
     if (difference.inDays > 7) {
@@ -1318,6 +1307,55 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     } else {
       return 'Just now';
     }
+  }
+
+  void _showGenerateVideoDialog() {
+    final textController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Generate Video'),
+        content: Container(
+          constraints: const BoxConstraints(maxHeight: 150),
+          child: TextFormField(
+            controller: textController,
+            decoration: const InputDecoration(
+              labelText: 'Enter video prompt',
+              hintText: 'A beautiful sunset over the ocean...',
+              border: OutlineInputBorder(),
+            ),
+            maxLines: null,
+            autofocus: true,
+            keyboardType: TextInputType.multiline,
+            textInputAction: TextInputAction.newline,
+            enableInteractiveSelection: true,
+            showCursor: true,
+            style: const TextStyle(fontSize: 16),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final prompt = textController.text.trim();
+              if (prompt.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please enter a prompt')),
+                );
+                return;
+              }
+              Navigator.of(context).pop();
+              _generateAndViewVideo(prompt);
+            },
+            child: const Text('Generate'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1339,29 +1377,6 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                 MaterialPageRoute(
                   builder: (context) => ProjectAnalyticsScreen(project: widget.project),
                 ),
-              );
-            },
-          ),
-          StreamBuilder<Project?>(
-            stream: _projectStream,
-            builder: (context, snapshot) {
-              if (!snapshot.hasData) return const SizedBox();
-              
-              final project = snapshot.data!;
-              return Row(
-                children: [
-                  Text(
-                    project.isPublic ? 'Public' : 'Private',
-                    style: TextStyle(
-                      color: project.isPublic ? Colors.green : Colors.grey,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Switch(
-                    value: project.isPublic,
-                    onChanged: (value) => _toggleProjectVisibility(value),
-                  ),
-                ],
               );
             },
           ),
@@ -1528,7 +1543,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
               itemBuilder: (context, index) {
                 final video = videos[index];
                 return GestureDetector(
-                  onTap: () => _viewVideos(project.id),
+                  onTap: () => _viewVideos(project.id, startIndex: index),
                   onLongPress: () => _showVideoOptions(video),
                   child: Card(
                     clipBehavior: Clip.antiAlias,
@@ -1698,7 +1713,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                   _buildTokenDisplay(),
                 ],
               ),
-              onTap: () => _showGenerateVideoDialog(),
+              onTap: () => _showVideoGenerationDialog(),
             ),
           ],
         ),
@@ -1770,43 +1785,252 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     }
   }
 
-  void _showGenerateVideoDialog() {
-    Navigator.pop(context);
+  void _showVideoGenerationDialog() {
+    // Store the context before the async operation
+    final scaffoldContext = context;
+    
     showDialog(
       context: context,
       builder: (context) => VideoGenerationDialog(
-        onVideoGenerated: (String videoUrl) => _handleGeneratedVideo(videoUrl),
+        onVideoGenerated: (String videoUrl) async {
+          try {
+            // Create a new video document
+            final video = await _videoService.createVideo(
+              url: videoUrl,
+              userId: FirebaseAuth.instance.currentUser!.uid,
+              projectId: widget.project.id,
+            );
+
+            // Add video to project
+            await _projectService.addVideoToProject(widget.project.id, video.id);
+
+            // Force refresh the project stream
+            setState(() {
+              _projectStream = _projectService
+                  .getProjectStream(widget.project.id)
+                  .asBroadcastStream();
+            });
+
+            // Show success message using stored context
+            if (mounted) {
+              ScaffoldMessenger.of(scaffoldContext).showSnackBar(
+                const SnackBar(
+                  content: Text('Video generated and added to project successfully!'),
+                  backgroundColor: Colors.green,
+                ),
+              );
+            }
+          } catch (e) {
+            print('Error adding generated video: $e');
+            if (mounted) {
+              ScaffoldMessenger.of(scaffoldContext).showSnackBar(
+                SnackBar(
+                  content: Text('Error adding video: $e'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+          }
+        },
       ),
     );
   }
 
-  Future<void> _handleGeneratedVideo(String videoUrl) async {
+  Future<void> _generateAndViewVideo(String prompt) async {
     try {
-      final video = await _videoService.createVideoFromUrl(
-        url: videoUrl,
-        userId: widget.project.userId,
-        title: 'AI Generated Video',
-        duration: 10,
+      // Show loading dialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: CircularProgressIndicator(),
+        ),
       );
-      await _projectService.addVideoToProject(
-        widget.project.id,
-        video.id,
+
+      // Generate and save the video
+      final video = await _videoService.generateAndSaveVideo(
+        prompt: prompt,
+        projectId: widget.project.id,
+        userId: FirebaseAuth.instance.currentUser!.uid,
+        onProgress: (status, progress) {
+          // Update loading dialog with progress
+          if (mounted) {
+            Navigator.of(context).pop(); // Remove old dialog
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (context) => AlertDialog(
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(value: progress),
+                    const SizedBox(height: 16),
+                    Text(status.toString().split('.').last),
+                  ],
+                ),
+              ),
+            );
+          }
+        },
+        onError: (message) {
+          // Show error message
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(message)),
+            );
+          }
+        },
       );
+
+      // Close loading dialog
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('AI video added to project successfully'),
-            backgroundColor: Colors.green,
+        Navigator.of(context).pop();
+      }
+
+      // Add video to project
+      await _projectService.addVideoToProject(widget.project.id, video.id);
+
+      // Show success dialog with verification
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Video Generated'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.check_circle_outline,
+                  color: Colors.green,
+                  size: 48,
+                ),
+                const SizedBox(height: 16),
+                const Text('Video has been generated successfully!'),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () async {
+                    try {
+                      // Verify video URL is accessible
+                      final response = await http.head(Uri.parse(video.url));
+                      if (response.statusCode != 200) {
+                        throw Exception('Video URL is not accessible');
+                      }
+
+                      if (!mounted) return;
+                      Navigator.of(context).pop(); // Close success dialog
+
+                      // Show video in feed
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => VideoFeedScreen(
+                            projectId: widget.project.id,
+                            videoUrls: [video.url],
+                            videoIds: [video.id],
+                            projectName: widget.project.name,
+                            preloadService: widget.preloadService,
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      print('Error verifying video URL: $e');
+                      if (!mounted) return;
+                      
+                      Navigator.of(context).pop(); // Close success dialog
+                      
+                      // Show error and refresh screen
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Video is not ready yet. Refreshing...'),
+                          backgroundColor: Colors.orange,
+                        ),
+                      );
+
+                      // Refresh the screen
+                      setState(() {
+                        _projectStream = _projectService
+                            .getProjectStream(widget.project.id)
+                            .asBroadcastStream();
+                      });
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.play_arrow),
+                      SizedBox(width: 8),
+                      Text('Watch Video'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         );
       }
     } catch (e) {
+      // Close loading dialog if open
+      if (mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+
+      // Show error
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error adding AI video: ${e.toString()}'),
+            content: Text('Error generating video: ${e.toString()}'),
             backgroundColor: Colors.red,
           ),
+        );
+      }
+    }
+  }
+
+  Future<void> _postComment() async {
+    if (_commentController.text.trim().isEmpty) return;
+
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please sign in to comment')),
+        );
+        return;
+      }
+
+      // Extract username from email
+      final email = user.email ?? '';
+      final username = email.split('@')[0];
+
+      final commentData = {
+        'text': _commentController.text.trim(),
+        'userId': user.uid,
+        'userName': username,  // Use extracted username instead of displayName
+        'userPhoto': user.photoURL,
+        'timestamp': FieldValue.serverTimestamp(),
+        'likeCount': 0,
+        'likedBy': [],
+        'reactions': {},
+      };
+
+      await _firestore
+          .collection('projects')
+          .doc(widget.project.id)
+          .collection('comments')
+          .add(commentData);
+
+      if (mounted) {
+        _commentController.clear();
+        FocusScope.of(context).unfocus();
+      }
+    } catch (e) {
+      print('Error posting comment: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error posting comment: $e')),
         );
       }
     }

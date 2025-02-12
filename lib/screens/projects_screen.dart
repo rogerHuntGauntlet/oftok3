@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/project_service.dart';
 import '../services/video/video_preload_service.dart';
+import '../services/video_service.dart';
 import '../models/project.dart';
 import 'project_details_screen.dart';
 import 'project_connections_screen.dart';
@@ -11,6 +12,8 @@ import '../widgets/app_bottom_navigation.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'dart:async';
 import 'package:permission_handler/permission_handler.dart';
+import './video_feed_screen.dart';
+import 'profile_screen.dart';
 
 class ProjectsScreen extends StatefulWidget {
   final VideoPreloadService? preloadService;
@@ -32,11 +35,12 @@ class _ProjectsScreenState extends State<ProjectsScreen> with SingleTickerProvid
   final TextEditingController _findProjectsSearchController = TextEditingController();
   String _myProjectsSearchQuery = '';
   String _findProjectsSearchQuery = '';
+  VideoPreloadService? get _preloadService => widget.preloadService;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 2, vsync: this);
     _myProjectsSearchController.addListener(() {
       setState(() {
         _myProjectsSearchQuery = _myProjectsSearchController.text;
@@ -92,6 +96,167 @@ class _ProjectsScreenState extends State<ProjectsScreen> with SingleTickerProvid
     }
   }
 
+  void _showDoomscrollWarning() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('⚠️ Warning'),
+        content: const Text('Are you sure you want to doomscroll?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('No, take me back'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.red,
+            ),
+            onPressed: () async {
+              print('Starting doomscroll process...'); // Debug print
+              
+              try {
+                // Check if user is authenticated
+                final user = FirebaseAuth.instance.currentUser;
+                if (user == null) {
+                  print('User not authenticated!'); // Debug print
+                  Navigator.of(context).pop(); // Close the dialog
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Please log in to access videos'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                  return;
+                }
+
+                // Get all available videos first, while still in the dialog
+                print('Fetching videos...'); // Debug print
+                final videoService = VideoService();
+                final videos = await videoService.getAllVideos();
+                print('Found ${videos.length} videos'); // Debug print
+
+                // Only close the dialog after we have the videos
+                Navigator.of(context).pop(); // Close the warning dialog
+                
+                // Validate videos before proceeding
+                if (videos.isEmpty) {
+                  print('No videos found!'); // Debug print
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('No videos available for doomscrolling'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                  return;
+                }
+                
+                // Extract and validate URLs and IDs
+                final videoUrls = videos.map((v) => v.url).where((url) => url != null && url.isNotEmpty).toList();
+                final videoIds = videos.map((v) => v.id).where((id) => id != null && id.isNotEmpty).toList();
+                
+                print('Valid video URLs: ${videoUrls.length}'); // Debug print
+                print('Valid video IDs: ${videoIds.length}'); // Debug print
+                
+                // Verify both lists have matching lengths and are not empty
+                if (videoUrls.isEmpty || videoIds.isEmpty || videoUrls.length != videoIds.length) {
+                  print('Invalid video data!'); // Debug print
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Error: Some videos have missing data'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                  return;
+                }
+                
+                // Shuffle the videos for random order
+                final indices = List.generate(videoUrls.length, (i) => i);
+                indices.shuffle();
+                final shuffledUrls = indices.map((i) => videoUrls[i]).toList();
+                final shuffledIds = indices.map((i) => videoIds[i]).toList();
+                
+                print('Videos shuffled, preparing to navigate...'); // Debug print
+                print('First video URL: ${shuffledUrls.firstOrNull}'); // Debug print
+                print('First video ID: ${shuffledIds.firstOrNull}'); // Debug print
+                
+                print('🔍 Debug checkpoint 1'); // Debug print
+                if (!context.mounted) {
+                    print('❌ Context not mounted after shuffle!');
+                    return;
+                }
+                print('🔍 Debug checkpoint 2'); // Debug print
+                
+                // Navigate to video feed
+                if (context.mounted) {
+                  print('🟢 Pre-navigation checks:'); // Debug print
+                  print('Context mounted: ${context.mounted}'); // Debug print
+                  print('Number of URLs: ${shuffledUrls.length}'); // Debug print
+                  print('Number of IDs: ${shuffledIds.length}'); // Debug print
+                  print('PreloadService available: ${_preloadService != null}'); // Debug print
+                  
+                  try {
+                    print('🟢 Starting navigation to VideoFeedScreen...'); // Debug print
+                    final videoFeedScreen = VideoFeedScreen(
+                      videoUrls: shuffledUrls,
+                      videoIds: shuffledIds,
+                      projectId: 'doomscroll',
+                      projectName: 'Doomscroll',
+                      preloadService: _preloadService,
+                    );
+                    print('🟢 VideoFeedScreen instance created successfully'); // Debug print
+                    
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) {
+                          print('🟢 Route builder called'); // Debug print
+                          return videoFeedScreen;
+                        },
+                      ),
+                    );
+                    print('✅ Navigation completed successfully'); // Debug print
+                  } catch (e, stackTrace) {
+                    print('❌ Error during navigation:'); // Debug print
+                    print('Error type: ${e.runtimeType}'); // Debug print
+                    print('Error message: $e'); // Debug print
+                    print('Stack trace:\n$stackTrace'); // Debug print
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Error displaying videos: ${e.toString()}'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
+                  }
+                }
+              } catch (e, stackTrace) {
+                print('❌ FATAL ERROR in doomscroll:'); // Debug print
+                print('Error type: ${e.runtimeType}'); // Debug print
+                print('Error message: $e'); // Debug print
+                print('Stack trace:\n$stackTrace'); // Debug print
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Error loading videos: ${e.toString()}'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
+            },
+            child: const Text('Yes, continue'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSearchBar(TextEditingController controller, String hintText) {
     return Padding(
       padding: const EdgeInsets.all(8.0),
@@ -127,6 +292,23 @@ class _ProjectsScreenState extends State<ProjectsScreen> with SingleTickerProvid
       appBar: AppBar(
         title: const Text('Projects'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.person),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const ProfileScreen(),
+                ),
+              );
+            },
+            tooltip: 'Profile',
+          ),
+          IconButton(
+            icon: const Icon(Icons.warning_amber_rounded),
+            onPressed: () => _showDoomscrollWarning(),
+            tooltip: 'Warning',
+          ),
           IconButton(
             icon: const Icon(Icons.trending_up),
             tooltip: 'Popular Projects',
@@ -486,7 +668,7 @@ class _CreateProjectDialogState extends State<_CreateProjectDialog> with SingleT
             });
           },
           listenFor: Duration(seconds: 300),
-          pauseFor: Duration(seconds: 3),
+          pauseFor: Duration(seconds: 10),
           partialResults: true,
           cancelOnError: false,
           listenMode: ListenMode.dictation,
@@ -514,7 +696,7 @@ class _CreateProjectDialogState extends State<_CreateProjectDialog> with SingleT
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Tap the microphone to start recording, tap again to stop. AI will generate a title and description, and find related videos.',
+              'Tap the microphone and speak to describe your project. AI will generate a title and description.',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
             SizedBox(height: 20),

@@ -5,10 +5,10 @@
             <gradient
                 android:type="radial"
                 android:gradientRadius="1000"
-                android:startColor="#FF9933"
-                android:centerColor="#9933FF"
-                android:endColor="#FFFF66"
-                android:angle="45"/>
+                android:startColor="#660066"
+                android:centerColor="#FF6600"
+                android:endColor="#330033"
+                android:angle="225"/>
         </shape>
     </item>
 </layer-list> 

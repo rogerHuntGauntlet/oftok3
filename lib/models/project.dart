@@ -9,8 +9,7 @@ class Project {
   final List<String> videoIds;
   final bool isPublic;
   final List<String> collaboratorIds;
-  final List<String> favoritedBy;
-  final int score;
+  final double score;
   final int likeCount;
   final int commentCount;
   final int shareCount;
@@ -28,8 +27,7 @@ class Project {
     List<String>? videoIds,
     bool? isPublic,
     List<String>? collaboratorIds,
-    List<String>? favoritedBy,
-    int? score,
+    double? score,
     int? likeCount,
     int? commentCount,
     int? shareCount,
@@ -40,8 +38,7 @@ class Project {
   })  : videoIds = videoIds ?? [],
         isPublic = isPublic ?? false,
         collaboratorIds = collaboratorIds ?? [],
-        favoritedBy = favoritedBy ?? [],
-        score = score ?? 0,
+        score = score ?? 0.0,
         likeCount = likeCount ?? 0,
         commentCount = commentCount ?? 0,
         shareCount = shareCount ?? 0,
@@ -56,11 +53,10 @@ class Project {
       'name': name,
       'description': description,
       'userId': userId,
-      'createdAt': createdAt.toIso8601String(),
+      'createdAt': Timestamp.fromDate(createdAt),
       'videoIds': videoIds,
       'isPublic': isPublic,
       'collaboratorIds': collaboratorIds,
-      'favoritedBy': favoritedBy,
       'score': score,
       'likeCount': likeCount,
       'commentCount': commentCount,
@@ -68,35 +64,30 @@ class Project {
       'totalSessionDuration': totalSessionDuration.inMilliseconds,
       'sessionCount': sessionCount,
       'videoCompletionRates': videoCompletionRates,
-      'lastEngagement': lastEngagement.toIso8601String(),
+      'lastEngagement': Timestamp.fromDate(lastEngagement),
     };
   }
 
-  factory Project.fromJson(Map<String, dynamic> json) {
+  factory Project.fromJson(Map<String, dynamic> json, {String? id}) {
     return Project(
-      id: json['id'] as String,
+      id: id ?? json['id'] as String,
       name: json['name'] as String,
       description: json['description'] as String?,
       userId: json['userId'] as String,
-      createdAt: json['createdAt'] is Timestamp
-          ? (json['createdAt'] as Timestamp).toDate()
-          : DateTime.parse(json['createdAt'] as String),
-      videoIds: List<String>.from(json['videoIds'] ?? []),
       isPublic: json['isPublic'] as bool? ?? false,
+      videoIds: List<String>.from(json['videoIds'] ?? []),
       collaboratorIds: List<String>.from(json['collaboratorIds'] ?? []),
-      favoritedBy: List<String>.from(json['favoritedBy'] ?? []),
-      score: json['score'] as int? ?? 0,
-      likeCount: json['likeCount'] as int? ?? 0,
-      commentCount: json['commentCount'] as int? ?? 0,
-      shareCount: json['shareCount'] as int? ?? 0,
-      totalSessionDuration: Duration(milliseconds: json['totalSessionDuration'] as int? ?? 0),
-      sessionCount: json['sessionCount'] as int? ?? 0,
-      videoCompletionRates: Map<String, double>.from(json['videoCompletionRates'] ?? {}),
-      lastEngagement: json['lastEngagement'] is Timestamp
-          ? (json['lastEngagement'] as Timestamp).toDate()
-          : json['lastEngagement'] != null
-              ? DateTime.parse(json['lastEngagement'] as String)
-              : DateTime.now(),
+      createdAt: (json['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      lastEngagement: (json['lastEngagement'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      score: (json['score'] as num?)?.toDouble() ?? 0.0,
+      likeCount: (json['likeCount'] as num?)?.toInt() ?? 0,
+      commentCount: (json['commentCount'] as num?)?.toInt() ?? 0,
+      shareCount: (json['shareCount'] as num?)?.toInt() ?? 0,
+      totalSessionDuration: Duration(milliseconds: (json['totalSessionDuration'] as num?)?.toInt() ?? 0),
+      sessionCount: (json['sessionCount'] as num?)?.toInt() ?? 0,
+      videoCompletionRates: (json['videoCompletionRates'] as Map<String, dynamic>?)?.map(
+        (key, value) => MapEntry(key, (value as num).toDouble()),
+      ) ?? {},
     );
   }
 
@@ -109,8 +100,7 @@ class Project {
     List<String>? videoIds,
     bool? isPublic,
     List<String>? collaboratorIds,
-    List<String>? favoritedBy,
-    int? score,
+    double? score,
     int? likeCount,
     int? commentCount,
     int? shareCount,
@@ -128,7 +118,6 @@ class Project {
       videoIds: videoIds ?? this.videoIds,
       isPublic: isPublic ?? this.isPublic,
       collaboratorIds: collaboratorIds ?? this.collaboratorIds,
-      favoritedBy: favoritedBy ?? this.favoritedBy,
       score: score ?? this.score,
       likeCount: likeCount ?? this.likeCount,
       commentCount: commentCount ?? this.commentCount,
@@ -142,10 +131,6 @@ class Project {
 
   bool canEdit(String userId) {
     return this.userId == userId || collaboratorIds.contains(userId);
-  }
-
-  bool isFavoritedBy(String userId) {
-    return favoritedBy.contains(userId);
   }
 
   // Analytics helper methods

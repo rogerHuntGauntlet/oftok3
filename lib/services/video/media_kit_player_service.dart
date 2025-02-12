@@ -17,21 +17,29 @@ class MediaKitPlayerService implements VideoPlayerService {
 
   @override
   Future<void> initialize(String videoUrl) async {
-    // Dispose existing resources
-    await dispose();
-
+    print('MediaKitPlayerService: Initializing with URL: $videoUrl');
+    
     try {
-      // Create new controllers
+      _player?.dispose();
       _player = Player();
-      _videoController = await VideoController(_player!);
-      _positionController = StreamController<Duration>.broadcast();
-      _playingController = StreamController<bool>.broadcast();
-
-      // Open the media source
+      _videoController = VideoController(_player!);
+      
+      print('MediaKitPlayerService: Player and controller created');
+      
+      // Initialize position and playing controllers if not already created
+      _positionController ??= StreamController<Duration>.broadcast();
+      _playingController ??= StreamController<bool>.broadcast();
+      
       await _player!.open(Media(videoUrl));
-
-      // Setup position updates
-      _positionSubscription = _player!.streams.position.listen(
+      print('MediaKitPlayerService: Media opened successfully');
+      
+      // Enable looping
+      _player!.setPlaylistMode(PlaylistMode.loop);
+      
+      // Setup position updates with more frequent updates
+      _positionSubscription = _player!.streams.position
+          .distinct() // Only emit when position actually changes
+          .listen(
         (position) {
           if (_positionController?.isClosed == false) {
             _positionController?.add(position);
@@ -42,8 +50,10 @@ class MediaKitPlayerService implements VideoPlayerService {
         },
       );
 
-      // Setup playing state updates
-      _playingSubscription = _player!.streams.playing.listen(
+      // Setup playing state updates with error handling
+      _playingSubscription = _player!.streams.playing
+          .distinct() // Only emit when state actually changes
+          .listen(
         (playing) {
           if (_playingController?.isClosed == false) {
             _playingController?.add(playing);
@@ -53,10 +63,10 @@ class MediaKitPlayerService implements VideoPlayerService {
           print('Playing stream error: $error');
         },
       );
-    } catch (e) {
-      print('MediaKit initialization error: $e');
-      await dispose();
-      throw Exception('Failed to initialize media_kit player: $e');
+    } catch (e, stackTrace) {
+      print('MediaKitPlayerService Error: $e');
+      print('MediaKitPlayerService Stack trace: $stackTrace');
+      rethrow;
     }
   }
 

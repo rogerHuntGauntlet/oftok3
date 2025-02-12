@@ -1,10 +1,13 @@
 {
-  "name": "ohftok-video-api",
+  "name": "video-generation-api",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
-  "description": "Video generation API for OHFtok",
-  "main": "genVid.js",
   "dependencies": {
-    "replicate": "^0.25.2"
+    "replicate": "^0.25.2",
+    "firebase-admin": "^12.0.0",
+    "openai": "^4.28.0",
+    "dotenv": "^16.4.1",
+    "uuid": "^9.0.1"
   }
 } 

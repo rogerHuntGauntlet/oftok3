@@ -92,6 +92,66 @@ class _ProjectNetworkScreenState extends State<ProjectNetworkScreen> {
     );
   }
 
+  double _calculateProjectScore(Project project) {
+    final likeScore = project.likeCount * 4.0;
+    final commentScore = project.commentCount * 3.0;
+    final shareScore = project.shareCount * 5.0;
+    return likeScore + commentScore + shareScore;
+  }
+
+  Widget _buildStatItem(IconData icon, String value, String label) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 20),
+        const SizedBox(height: 4),
+        Text(value),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProjectCard(Project project) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              project.name,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildStatItem(
+                  Icons.favorite,
+                  '${project.likeCount}',
+                  'Likes',
+                ),
+                _buildStatItem(
+                  Icons.comment,
+                  '${project.commentCount}',
+                  'Comments',
+                ),
+                _buildStatItem(
+                  Icons.share,
+                  '${project.shareCount}',
+                  'Shares',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // Get the screen size
@@ -148,7 +208,7 @@ class _ProjectNetworkScreenState extends State<ProjectNetworkScreen> {
                 final baseSize = 50.0; // Base size for all nodes
                 final collaboratorScore = project.collaboratorIds.length * 5.0;
                 final videoScore = project.videoIds.length * 3.0;
-                final likeScore = project.favoritedBy.length * 4.0;
+                final likeScore = _calculateProjectScore(project);
                 
                 // Total size with upper and lower bounds
                 final totalSize = (baseSize + collaboratorScore + videoScore + likeScore)
@@ -244,7 +304,7 @@ class _ProjectNetworkScreenState extends State<ProjectNetworkScreen> {
                                     ),
                                     const SizedBox(width: 2),
                                     Text(
-                                      '${project.favoritedBy.length}',
+                                      '${project.likeCount}',
                                       style: TextStyle(
                                         fontSize: totalSize / 8,
                                         color: Colors.white,

@@ -40,6 +40,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Future<void> _initializeVideo() async {
     if (!mounted) return;
 
+    print('Initializing video with URL: ${widget.videoUrl}'); // Debug log
+
     setState(() {
       _isInitializing = true;
       _hasError = false;
@@ -50,34 +52,42 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     try {
       final provider = Provider.of<VideoPlayerProvider>(context, listen: false);
       
+      print('Starting video initialization...'); // Debug log
+      
       // Initialize the video
       await provider.initializeVideo(
         widget.videoUrl,
         preloadedPlayer: widget.preloadedPlayer,
       );
 
+      print('Video initialization completed successfully'); // Debug log
+
       // Set up listener for playback state
       provider.addListener(() {
         if (!_hasNotifiedStart && provider.isPlaying) {
           _hasNotifiedStart = true;
           widget.onVideoStarted?.call();
+          print('Video playback started'); // Debug log
         }
       });
 
       // Handle autoplay
       if (widget.autoPlay) {
+        print('Attempting autoplay...'); // Debug log
         await provider.play();
+        print('Autoplay initiated'); // Debug log
       } else {
         await provider.pause();
       }
-    } catch (e) {
+    } catch (e, stackTrace) { // Added stackTrace
+      print('Video initialization error: $e'); // Debug log
+      print('Stack trace: $stackTrace'); // Debug log
       if (mounted) {
         setState(() {
           _hasError = true;
           _errorMessage = e.toString();
         });
       }
-      print('Video initialization error: $e'); // Debug log
     } finally {
       if (mounted) {
         setState(() {
@@ -231,62 +241,77 @@ class VideoProgressBar extends StatelessWidget {
         ),
       ),
       child: Center(
-        child: SizedBox(
-          width: MediaQuery.of(context).size.width * 0.5,
-          child: StreamBuilder<Duration>(
-            stream: provider.player?.positionStream,
-            builder: (context, snapshot) {
-              final position = snapshot.data ?? Duration.zero;
-              final progress = provider.duration.inMilliseconds > 0
-                  ? position.inMilliseconds / provider.duration.inMilliseconds
-                  : 0.0;
-              
-              return Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // Current position
-                  Text(
-                    _formatDuration(position),
-                    style: const TextStyle(color: Colors.white),
+        child: StreamBuilder<Duration>(
+          stream: provider.player?.positionStream,
+          builder: (context, snapshot) {
+            final position = snapshot.data ?? Duration.zero;
+            final duration = provider.duration;
+            final progress = duration.inMilliseconds > 0
+                ? position.inMilliseconds / duration.inMilliseconds
+                : 0.0;
+            
+            return Row(
+              children: [
+                // Current position
+                Text(
+                  _formatDuration(position),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
                   ),
-                  
-                  // Progress slider
-                  Expanded(
-                    child: SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        trackHeight: 2,
-                        thumbShape: const RoundSliderThumbShape(
-                          enabledThumbRadius: 6,
-                        ),
-                        overlayShape: const RoundSliderOverlayShape(
-                          overlayRadius: 12,
-                        ),
-                        activeTrackColor: Colors.white,
-                        inactiveTrackColor: Colors.white.withOpacity(0.3),
-                        thumbColor: Colors.white,
-                        overlayColor: Colors.white.withOpacity(0.3),
+                ),
+                
+                const SizedBox(width: 8),
+                
+                // Progress slider
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 2,
+                      thumbShape: const RoundSliderThumbShape(
+                        enabledThumbRadius: 6,
                       ),
-                      child: Slider(
-                        value: progress.clamp(0.0, 1.0),
-                        onChanged: (value) {
-                          final newPosition = Duration(
-                            milliseconds: (value * provider.duration.inMilliseconds).round(),
-                          );
-                          provider.seek(newPosition);
-                        },
+                      overlayShape: const RoundSliderOverlayShape(
+                        overlayRadius: 12,
                       ),
+                      activeTrackColor: Colors.white,
+                      inactiveTrackColor: Colors.white.withOpacity(0.3),
+                      thumbColor: Colors.white,
+                      overlayColor: Colors.white.withOpacity(0.3),
+                    ),
+                    child: Slider(
+                      value: progress.clamp(0.0, 1.0),
+                      onChangeStart: (_) {
+                        // Pause video while dragging
+                        provider.pause();
+                      },
+                      onChanged: (value) {
+                        final newPosition = Duration(
+                          milliseconds: (value * duration.inMilliseconds).round(),
+                        );
+                        provider.seek(newPosition);
+                      },
+                      onChangeEnd: (_) {
+                        // Resume playback after dragging
+                        provider.play();
+                      },
                     ),
                   ),
+                ),
 
-                  // Total duration
-                  Text(
-                    _formatDuration(provider.duration),
-                    style: const TextStyle(color: Colors.white),
+                const SizedBox(width: 8),
+
+                // Total duration
+                Text(
+                  _formatDuration(duration),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
                   ),
-                ],
-              );
-            },
-          ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -294,8 +319,9 @@ class VideoProgressBar extends StatelessWidget {
 
   String _formatDuration(Duration duration) {
     String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final hours = duration.inHours;
     final minutes = twoDigits(duration.inMinutes.remainder(60));
     final seconds = twoDigits(duration.inSeconds.remainder(60));
-    return '$minutes:$seconds';
+    return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
   }
 } 

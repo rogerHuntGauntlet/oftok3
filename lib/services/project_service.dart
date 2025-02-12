@@ -6,6 +6,7 @@ import 'ai_caption_service.dart';
 import 'video_service.dart';
 import '../services/notification_service.dart';
 import '../services/auth_service.dart';
+import '../services/social_service.dart';
 
 class ProjectService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -298,14 +299,8 @@ class ProjectService {
       final doc = await _firestore.collection('projects').doc(projectId).get();
       if (!doc.exists) throw Exception('Project not found');
 
-      final project = Project.fromJson(doc.data()!);
-      final isFavorited = project.favoritedBy.contains(userId);
-
-      await _firestore.collection('projects').doc(projectId).update({
-        'favoritedBy': isFavorited
-            ? FieldValue.arrayRemove([userId])
-            : FieldValue.arrayUnion([userId]),
-      });
+      final socialService = SocialService();
+      await socialService.toggleLike(projectId);
 
       print('Successfully toggled project favorite status'); // Debug print
     } catch (e) {
@@ -323,7 +318,7 @@ class ProjectService {
         .orderBy('score', descending: true)
         .limit(limit)
         .snapshots()
-        .map((snapshot) {
+        .asyncMap((snapshot) async {
           try {
             final projects = snapshot.docs.map((doc) {
               try {
@@ -339,31 +334,80 @@ class ProjectService {
             .cast<Project>()
             .toList();
 
-            // Sort projects: favorites first, then by score
-            projects.sort((a, b) {
-              // First sort by whether the current user has favorited
-              final currentUser = FirebaseAuth.instance.currentUser;
-              if (currentUser != null) {
-                final aFavorited = a.favoritedBy.contains(currentUser.uid);
-                final bFavorited = b.favoritedBy.contains(currentUser.uid);
-                if (aFavorited != bFavorited) {
-                  return aFavorited ? -1 : 1;
-                }
-              }
-              // Then sort by number of favorites
-              final favoritesComparison = b.favoritedBy.length.compareTo(a.favoritedBy.length);
-              if (favoritesComparison != 0) return favoritesComparison;
-              // Finally sort by score
-              return b.score.compareTo(a.score);
-            });
+            // Sort projects using the async sorting method
+            final sortedProjects = await _sortProjectsByRelevance(projects);
             
             print('Found ${projects.length} projects sorted by favorites and score'); // Debug print
-            return projects;
+            return sortedProjects;
           } catch (e) {
             print('Error processing projects by favorites and score: $e');
             rethrow;
           }
         });
+  }
+
+  // Calculate engagement score based on multiple metrics
+  double _calculateEngagementScore(Project project) {
+    const sessionWeight = 0.4;
+    const scoreWeight = 0.3;
+    const likesWeight = 0.2;
+    const commentsWeight = 0.1;
+
+    // Normalize session duration (assuming 5 minutes is a good session)
+    final avgSessionDuration = project.sessionCount > 0
+        ? project.totalSessionDuration.inSeconds / project.sessionCount
+        : 0;
+    final normalizedSessionScore = avgSessionDuration / 300; // 300 seconds = 5 minutes
+
+    return (normalizedSessionScore * sessionWeight) +
+           (project.score * scoreWeight) +
+           (project.likeCount * likesWeight) +
+           (project.commentCount * commentsWeight);
+  }
+
+  // Sort projects by relevance
+  Future<List<Project>> _sortProjectsByRelevance(List<Project> projects) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return projects;
+
+    final socialService = SocialService();
+    final likeStatusFutures = projects.map((p) => socialService.hasUserLiked(p.id));
+    final likeStatuses = await Future.wait(likeStatusFutures);
+    
+    final projectsWithLikes = List.generate(
+      projects.length,
+      (i) => MapEntry(projects[i], likeStatuses[i]),
+    );
+
+    projectsWithLikes.sort((a, b) {
+      final aProject = a.key;
+      final bProject = b.key;
+      final aLiked = a.value;
+      final bLiked = b.value;
+      
+      // Owner's projects come first
+      if (aProject.userId == currentUser.uid && bProject.userId != currentUser.uid) return -1;
+      if (bProject.userId == currentUser.uid && aProject.userId != currentUser.uid) return 1;
+
+      // Collaborator's projects come second
+      final aIsCollaborator = aProject.collaboratorIds.contains(currentUser.uid);
+      final bIsCollaborator = bProject.collaboratorIds.contains(currentUser.uid);
+      if (aIsCollaborator && !bIsCollaborator) return -1;
+      if (bIsCollaborator && !aIsCollaborator) return 1;
+
+      // Liked projects come third
+      if (aLiked && !bLiked) return -1;
+      if (bLiked && !aLiked) return 1;
+
+      // Then sort by total likes
+      final likesComparison = bProject.likeCount.compareTo(aProject.likeCount);
+      if (likesComparison != 0) return likesComparison;
+
+      // Finally sort by most recent
+      return bProject.lastEngagement.compareTo(aProject.lastEngagement);
+    });
+
+    return projectsWithLikes.map((e) => e.key).toList();
   }
 
   // Search user accessible projects
@@ -538,22 +582,74 @@ class ProjectService {
         });
   }
 
-  // Calculate engagement score based on multiple metrics
-  double _calculateEngagementScore(Project project) {
-    const sessionWeight = 0.4;
-    const scoreWeight = 0.3;
-    const favoritesWeight = 0.2;
-    const commentsWeight = 0.1;
+  Future<Map<String, dynamic>> getProjectSummary(Project project, String userId) async {
+    final isOwner = project.userId == userId;
+    final isCollaborator = project.collaboratorIds.contains(userId);
+    final hasAccess = isOwner || isCollaborator || project.isPublic;
+    
+    // Get like status from social service
+    final socialService = SocialService();
+    final isLiked = await socialService.hasUserLiked(project.id);
 
-    // Normalize session duration (assuming 5 minutes is a good session)
-    final avgSessionDuration = project.sessionCount > 0
-        ? project.totalSessionDuration.inSeconds / project.sessionCount
-        : 0;
-    final normalizedSessionScore = avgSessionDuration / 300; // 300 seconds = 5 minutes
+    return {
+      'id': project.id,
+      'name': project.name,
+      'description': project.description,
+      'isOwner': isOwner,
+      'isCollaborator': isCollaborator,
+      'hasAccess': hasAccess,
+      'isLiked': isLiked,
+      'likeCount': project.likeCount,
+      'commentCount': project.commentCount,
+      'shareCount': project.shareCount,
+    };
+  }
 
-    return (normalizedSessionScore * sessionWeight) +
-           (project.score * scoreWeight) +
-           (project.favoritedBy.length * favoritesWeight) +
-           (project.commentCount * commentsWeight);
+  double _calculateProjectScore(Project project) {
+    const double viewsWeight = 1.0;
+    const double likesWeight = 4.0;
+    const double commentsWeight = 3.0;
+    const double sharesWeight = 5.0;
+    
+    return (project.likeCount * likesWeight) +
+           (project.commentCount * commentsWeight) +
+           (project.shareCount * sharesWeight);
+  }
+
+  // Get projects containing a video
+  Future<List<Project>> getProjectsContainingVideo(String videoId) async {
+    try {
+      final querySnapshot = await _firestore
+          .collection('projects')
+          .where('videoIds', arrayContains: videoId)
+          .get();
+      
+      return querySnapshot.docs
+          .map((doc) => Project.fromJson(doc.data(), id: doc.id))
+          .toList();
+    } catch (e) {
+      print('Error getting projects containing video: $e');
+      rethrow;
+    }
+  }
+
+  // Remove video from multiple projects
+  Future<void> removeVideoFromProjects(String videoId, List<String> projectIds) async {
+    try {
+      final batch = _firestore.batch();
+      
+      for (final projectId in projectIds) {
+        final projectRef = _firestore.collection('projects').doc(projectId);
+        batch.update(projectRef, {
+          'videoIds': FieldValue.arrayRemove([videoId]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      
+      await batch.commit();
+    } catch (e) {
+      print('Error removing video from projects: $e');
+      rethrow;
+    }
   }
 } 
