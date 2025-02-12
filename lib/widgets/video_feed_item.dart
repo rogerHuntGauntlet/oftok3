@@ -18,6 +18,7 @@ class VideoFeedItem extends StatefulWidget {
   final MediaKitPlayerService player;
   final String? projectId;
   final String projectName;
+  final bool showInfo;
   final VoidCallback? onLike;
   final VoidCallback? onShare;
   final VoidCallback? onProjectTap;
@@ -28,6 +29,7 @@ class VideoFeedItem extends StatefulWidget {
     required this.player,
     required this.projectName,
     this.projectId,
+    this.showInfo = true,
     this.onLike,
     this.onShare,
     this.onProjectTap,
@@ -107,14 +109,15 @@ class _VideoFeedItemState extends State<VideoFeedItem> with WidgetsBindingObserv
           controls: media_kit_video.NoVideoControls,
         ),
 
-        // Video Controls Overlay
-        VideoControlsOverlay(
-          video: widget.video,
-          projectName: widget.projectName,
-          onLike: widget.onLike,
-          onShare: widget.onShare,
-          onProjectTap: widget.onProjectTap,
-        ),
+        // Video Controls Overlay (only if showInfo is true)
+        if (widget.showInfo)
+          VideoControlsOverlay(
+            video: widget.video,
+            projectName: widget.projectName,
+            onLike: widget.onLike,
+            onShare: widget.onShare,
+            onProjectTap: widget.onProjectTap,
+          ),
 
         // Back Button
         Positioned(

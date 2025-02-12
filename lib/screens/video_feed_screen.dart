@@ -48,10 +48,13 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   final TextEditingController _commentController = TextEditingController();
   List<Video> _videos = [];
   bool _isDisposed = false;
+  bool _isLoadingMore = false;
+  bool _hasMoreVideos = true;
   
   // Add constants for player management
   static const int _preloadDistance = 1;  // How many videos to preload ahead/behind
   static const int _maxCachedPlayers = 3;  // Maximum number of players to keep in memory
+  static const int _loadMoreThreshold = 3;  // Load more when this many videos from the end
 
   @override
   void initState() {
@@ -60,46 +63,11 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     _playerPool = PlayerPool(maxPlayers: _maxCachedPlayers);
     
     print('\n🟢 === VideoFeedScreen Lifecycle: initState ===');
-    print('Video URLs (${widget.videoUrls.length}): ${widget.videoUrls}');
-    print('Video IDs (${widget.videoIds.length}): ${widget.videoIds}');
-    print('Project Name: ${widget.projectName}');
-    print('Project ID: ${widget.projectId ?? 'Not provided'}');
     print('Initial Index: ${widget.initialIndex}');
-    print('Auth State: ${FirebaseAuth.instance.currentUser?.uid ?? 'Not signed in'}');
+    print('Project ID: ${widget.projectId ?? 'Not provided'}');
     print('=====================================');
     
-    if (widget.videoUrls.isEmpty || widget.videoIds.isEmpty) {
-      print('❌ Error: No videos provided for feed');
-      print('URLs empty: ${widget.videoUrls.isEmpty}');
-      print('IDs empty: ${widget.videoIds.isEmpty}');
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          print('❌ Returning to previous screen due to no videos');
-          Navigator.of(context).pop();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No videos available to play'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      });
-      return;
-    }
-
-    print('🟢 Starting initialization sequence...');
-    _loadVideoDetails().then((_) {
-      print('🟢 Video details loaded, proceeding with system initialization');
-      if (mounted) {
-        _initializeVideoSystem();
-      } else {
-        print('❌ Widget not mounted after loading video details');
-      }
-    }).catchError((e, stackTrace) {
-      print('❌ Error in initialization sequence:');
-      print('Error: $e');
-      print('Stack trace: $stackTrace');
-    });
+    _loadInitialVideos();
   }
 
   @override
@@ -182,114 +150,70 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     }
   }
 
-  Future<void> _loadVideoDetails() async {
-    if (!mounted) {
-      print('❌ Widget not mounted during _loadVideoDetails');
-      return;
-    }
-
+  Future<void> _loadInitialVideos() async {
     try {
-      print('\n=== Loading Video Details ===');
-      print('Number of video IDs to load: ${widget.videoIds.length}');
-      
-      if (widget.videoIds.isEmpty) {
-        throw Exception('No video IDs provided');
-      }
-
       setState(() {
         _isLoading = true;
         _error = null;
       });
 
-      // For doomscroll mode, we don't need to reload video details
-      if (widget.projectId == 'doomscroll') {
-        print('Doomscroll mode detected, using provided video data');
-        final dummyVideos = List.generate(
-          widget.videoIds.length,
-          (i) => Video(
-            id: widget.videoIds[i],
-            url: widget.videoUrls[i],
-            title: 'Video ${i + 1}',
-            description: null,
-            thumbnailUrl: null,
-            duration: 0,
-            userId: FirebaseAuth.instance.currentUser?.uid ?? 'anonymous',
-            uploadedAt: DateTime.now(),
-            tags: [],
-            views: 0,
-            likedBy: [],
-            isAiGenerated: false,
-          ),
-        );
-        
-        if (!mounted) return;
-        
+      List<Video> initialVideos = [];
+      
+      // First load project videos if in a project
+      if (widget.projectId != null && widget.projectId != 'doomscroll') {
+        initialVideos = await _videoService.getProjectVideos(widget.videoIds);
+      }
+      
+      // If we're in doomscroll mode or have no project videos, load available videos
+      if (initialVideos.isEmpty) {
+        initialVideos = await _videoService.getAvailableVideos([]);
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        _videos = initialVideos;
+        _isLoading = false;
+        _hasMoreVideos = true;
+      });
+
+      _initializeVideoSystem();
+    } catch (e, stackTrace) {
+      print('Error loading initial videos: $e\n$stackTrace');
+      if (mounted) {
         setState(() {
-          _videos = dummyVideos;
+          _error = e.toString();
           _isLoading = false;
         });
-        
-        print('✓ State updated with dummy videos for doomscroll');
-        print('Number of dummy videos: ${dummyVideos.length}');
-        print('First dummy video: ${dummyVideos.first.toJson()}');
-        return;
       }
+    }
+  }
 
-      final List<Video> loadedVideos = [];
+  Future<void> _loadMoreVideos() async {
+    if (_isLoadingMore || !_hasMoreVideos) return;
+
+    try {
+      setState(() => _isLoadingMore = true);
+
+      // Get IDs of videos to exclude
+      final excludeIds = _videos.map((v) => v.id).toList();
       
-      for (int i = 0; i < widget.videoIds.length; i++) {
-        final videoId = widget.videoIds[i];
-        final videoUrl = widget.videoUrls[i];
-        
-        print('\nProcessing video $i:');
-        print('ID: $videoId');
-        print('URL: $videoUrl');
-        
-        final video = await _videoService.getVideo(videoId);
-        if (video != null) {
-          print('✓ Successfully loaded video details');
-          loadedVideos.add(video);
-        } else {
-          print('❌ Failed to load video details');
-        }
-      }
-
-      if (!mounted) {
-        print('❌ Widget not mounted after loading videos');
-        return;
-      }
-
-      print('\n=== Video Loading Summary ===');
-      print('Total videos attempted: ${widget.videoIds.length}');
-      print('Successfully loaded: ${loadedVideos.length}');
-      print('Failed to load: ${widget.videoIds.length - loadedVideos.length}');
-
-      if (loadedVideos.isEmpty) {
-        throw Exception('No valid videos found');
-      }
-
-      setState(() {
-        _videos = loadedVideos;
-        _isLoading = false;
-      });
-      
-      print('✓ State updated with loaded videos');
-      print('===========================\n');
-
-    } catch (e, stackTrace) {
-      print('\n❌ Error in _loadVideoDetails:');
-      print('Error: $e');
-      print('Stack trace: $stackTrace');
+      // Load next batch of available videos
+      final newVideos = await _videoService.getAvailableVideos(excludeIds);
       
       if (!mounted) return;
-      
+
       setState(() {
-        _error = e.toString();
-        _isLoading = false;
+        if (newVideos.isEmpty) {
+          _hasMoreVideos = false;
+        } else {
+          _videos.addAll(newVideos);
+        }
+        _isLoadingMore = false;
       });
-      
-      // Navigate back on error
-      Navigator.of(context).pop();
+    } catch (e) {
+      print('Error loading more videos: $e');
+      setState(() => _isLoadingMore = false);
     }
   }
 
@@ -333,12 +257,12 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   }
 
   Future<void> _initializeVideo(int index) async {
-    if (index < 0 || index >= widget.videoUrls.length) {
+    if (index < 0 || index >= _videos.length) {
       print('❌ Invalid video index: $index');
       return;
     }
 
-    final videoUrl = widget.videoUrls[index];
+    final videoUrl = _videos[index].url;
     print('Initializing video at index $index: $videoUrl');
 
     try {
@@ -361,10 +285,15 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     print('\n=== Page Changed: $page ===');
     if (_isDisposed) return;
 
+    // Check if we need to load more videos
+    if (page >= _videos.length - _loadMoreThreshold) {
+      _loadMoreVideos();
+    }
+
     try {
       // Pause the previous video
-      if (_currentPage >= 0 && _currentPage < widget.videoUrls.length) {
-        final previousUrl = widget.videoUrls[_currentPage];
+      if (_currentPage >= 0 && _currentPage < _videos.length) {
+        final previousUrl = _videos[_currentPage].url;
         final previousPlayer = await _playerPool.checkoutPlayer(previousUrl);
         await previousPlayer.pause();
         await _playerPool.returnPlayer(previousUrl);
@@ -376,30 +305,15 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
       });
 
       // Play the current video
-      if (page >= 0 && page < widget.videoUrls.length) {
-        final currentUrl = widget.videoUrls[page];
+      if (page >= 0 && page < _videos.length) {
+        final currentUrl = _videos[page].url;
         final currentPlayer = await _playerPool.checkoutPlayer(currentUrl);
         await currentPlayer.play();
       }
 
-      // Preload adjacent videos
+      // Handle preloading and cleanup
       final preloadRange = _getPreloadRange(page);
-      print('Preload range: $preloadRange');
-      
-      for (int i = preloadRange.start.toInt(); i <= preloadRange.end.toInt(); i++) {
-        if (i >= 0 && i < widget.videoUrls.length && i != page) {
-          print('Pre-loading video at index $i');
-          await _initializeVideo(i);
-        }
-      }
-
-      // Clean up videos outside preload range
-      for (int i = 0; i < widget.videoUrls.length; i++) {
-        if (i < preloadRange.start.toInt() || i > preloadRange.end.toInt()) {
-          final url = widget.videoUrls[i];
-          await _playerPool.returnPlayer(url);
-        }
-      }
+      await _handlePreloading(preloadRange);
     } catch (e, stackTrace) {
       print('❌ Error handling page change:');
       print('Error: $e');
@@ -525,18 +439,37 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   }
 
   Widget _buildVideoInfo(Video video) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.end,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Title
+        Text(
+          video.title,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            shadows: [
+              Shadow(
+                blurRadius: 4,
+                color: Colors.black,
+                offset: Offset(0, 1),
+              ),
+            ],
+          ),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        
+        // Description (if available)
+        if (video.description != null) ...[
+          const SizedBox(height: 4),
           Text(
-            video.title,
+            video.description!,
             style: const TextStyle(
               color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
+              fontSize: 14,
               shadows: [
                 Shadow(
                   blurRadius: 4,
@@ -545,33 +478,26 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
                 ),
               ],
             ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
-          if (video.description != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              video.description!,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                shadows: [
-                  Shadow(
-                    blurRadius: 4,
-                    color: Colors.black,
-                    offset: Offset(0, 1),
-                  ),
-                ],
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-          const SizedBox(height: 8),
-          Row(
+        ],
+        
+        // Project tag
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.3),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
                 Icons.folder,
                 color: Colors.white,
-                size: 16,
+                size: 14,
                 shadows: const [
                   Shadow(
                     blurRadius: 4,
@@ -581,24 +507,28 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
                 ],
               ),
               const SizedBox(width: 4),
-              Text(
-                widget.projectName,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  shadows: [
-                    Shadow(
-                      blurRadius: 4,
-                      color: Colors.black,
-                      offset: Offset(0, 1),
-                    ),
-                  ],
+              Flexible(
+                child: Text(
+                  widget.projectName,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    shadows: [
+                      Shadow(
+                        blurRadius: 4,
+                        color: Colors.black,
+                        offset: Offset(0, 1),
+                      ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -1061,98 +991,144 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     }
 
     return Scaffold(
-      body: PageView.builder(
-        controller: _pageController,
-        scrollDirection: Axis.vertical,
-        onPageChanged: _onPageChanged,
-        itemCount: widget.videoUrls.length,
-        itemBuilder: (context, index) {
-          final video = _videos[index];
-          final videoUrl = widget.videoUrls[index];
-          
-          return FutureBuilder<MediaKitPlayerService>(
-            future: _playerPool.checkoutPlayer(videoUrl),
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Error loading video',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        snapshot.error.toString(),
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                );
-              }
-
-              if (!snapshot.hasData) {
+      body: Stack(
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            scrollDirection: Axis.vertical,
+            onPageChanged: _onPageChanged,
+            itemCount: _hasMoreVideos ? null : _videos.length, // null for infinite scrolling
+            itemBuilder: (context, index) {
+              // Return empty container if we're at the end and no more videos
+              if (index >= _videos.length) {
+                if (!_isLoadingMore && _hasMoreVideos) {
+                  _loadMoreVideos();
+                }
                 return const Center(
                   child: CircularProgressIndicator(),
                 );
               }
 
-              return VideoFeedItem(
-                video: video,
-                player: snapshot.data!,
-                projectId: widget.projectId,
-                projectName: widget.projectName,
-                onLike: () async {
-                  if (FirebaseAuth.instance.currentUser == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Please sign in to like videos'),
-                        backgroundColor: Colors.red,
+              final video = _videos[index];
+              
+              return FutureBuilder<MediaKitPlayerService>(
+                future: _playerPool.checkoutPlayer(video.url),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Error loading video',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            snapshot.error.toString(),
+                            style: Theme.of(context).textTheme.bodyMedium,
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
                       ),
                     );
-                    return;
                   }
-                  await _socialService.toggleLike(video.id);
-                },
-                onShare: () async {
-                  await Share.share(
-                    'Check out this video from ${widget.projectName}!',
-                    subject: video.title ?? 'Shared video',
+
+                  if (!snapshot.hasData) {
+                    return const Center(
+                      child: CircularProgressIndicator(),
+                    );
+                  }
+
+                  return Stack(
+                    children: [
+                      // Video Player
+                      VideoFeedItem(
+                        video: video,
+                        player: snapshot.data!,
+                        projectId: widget.projectId,
+                        projectName: widget.projectName,
+                        showInfo: false,
+                      ),
+                      
+                      // Safe area for overlays
+                      SafeArea(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Expanded(child: Container()),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                // Video Info Overlay
+                                Expanded(
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(
+                                      left: 16,
+                                      right: 8,
+                                      bottom: 16,
+                                    ),
+                                    child: _buildVideoInfo(video),
+                                  ),
+                                ),
+                                
+                                // Social Action Buttons
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    right: 8,
+                                    bottom: 16,
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _buildLikeButton(video),
+                                      const SizedBox(height: 16),
+                                      _buildActionButton(
+                                        icon: Icons.comment,
+                                        label: 'Comment',
+                                        onPressed: () => _showCommentSheet(video),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      _buildActionButton(
+                                        icon: Icons.share,
+                                        label: 'Share',
+                                        onPressed: () => _handleShare(video),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      _buildActionButton(
+                                        icon: Icons.bookmark_border,
+                                        label: 'Save',
+                                        onPressed: () => _showProjectSelectionDialog(video),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   );
                 },
-                onProjectTap: widget.projectId == null
-                    ? null
-                    : () async {
-                        try {
-                          final project = await _projectService.getProject(widget.projectId!);
-                          if (project != null && mounted) {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (context) => ProjectDetailsScreen(
-                                  project: project,
-                                ),
-                              ),
-                            );
-                          }
-                        } catch (e) {
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Error loading project: ${e.toString()}'),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
-                          }
-                        }
-                      },
               );
             },
-          );
-        },
+          ),
+          
+          // Loading indicator for more videos
+          if (_isLoadingMore)
+            const Positioned(
+              bottom: 16,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: CircularProgressIndicator(),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -1212,5 +1188,22 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   void _handleReactionSubmit(String commentId, String emoji) {
     if (widget.projectId == null || widget.projectId == 'doomscroll') return;
     _socialService.addReaction(widget.projectId!, commentId, emoji);
+  }
+
+  Future<void> _handlePreloading(RangeValues preloadRange) async {
+    // Preload adjacent videos
+    for (int i = preloadRange.start.toInt(); i <= preloadRange.end.toInt(); i++) {
+      if (i >= 0 && i < _videos.length && i != _currentPage) {
+        await _initializeVideo(i);
+      }
+    }
+
+    // Clean up videos outside preload range
+    for (int i = 0; i < _videos.length; i++) {
+      if (i < preloadRange.start.toInt() || i > preloadRange.end.toInt()) {
+        final url = _videos[i].url;
+        await _playerPool.returnPlayer(url);
+      }
+    }
   }
 } 

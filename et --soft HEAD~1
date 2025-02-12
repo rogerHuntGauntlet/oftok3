@@ -1,0 +1,25 @@
+[33mcommit 0984286d906d7b9b86047aaed31f662b05ea9e5a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: Roger <roger.b.hunt.iii@gauntletai.com>
+Date:   Tue Feb 11 23:13:48 2025 -0600
+
+    jj
+
+[33mcommit a37ef85aa69541844c7658954ee593c62a4b40f1[m
+Author: Roger <roger.b.hunt.iii@gauntletai.com>
+Date:   Tue Feb 11 23:12:22 2025 -0600
+
+    feat: Enhance video generation and metadata handling with HLS streaming and preview support
+    
+    - Add HLS streaming support for improved video playback
+    - Implement preview GIF generation for video thumbnails
+    - Update video model to include HLS and preview URLs
+    - Modify video generation service to support new metadata fields
+    - Improve video thumbnail widget with visibility-based preview loading
+    - Add Firebase Storage integration for thumbnail and preview uploads
+    - Enhance video feed and project details screens to use new video metadata
+
+[33mcommit 339a551fb320bf32e6f5cff3a88d825fb5ec9e57[m[33m ([m[1;31morigin/main[m[33m, [m[1;32mbackup-main[m[33m)[m
+Author: Roger <roger.b.hunt.iii@gauntletai.com>
+Date:   Tue Feb 11 19:18:47 2025 -0600
+
+    fix: remove hardcoded Replicate API token from build.gradle
