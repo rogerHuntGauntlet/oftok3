@@ -50,10 +50,10 @@ android {
             signingConfig signingConfigs.release
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            buildConfigField "String", "REPLICATE_API_TOKEN", "\"***REMOVED***\""
+            buildConfigField "String", "REPLICATE_API_TOKEN", "\"" + (System.getenv("REPLICATE_API_TOKEN") ?: "") + "\""
         }
         debug {
-            buildConfigField "String", "REPLICATE_API_TOKEN", "\"***REMOVED***\""
+            buildConfigField "String", "REPLICATE_API_TOKEN", "\"" + (System.getenv("REPLICATE_API_TOKEN") ?: "") + "\""
         }
     }
 }
