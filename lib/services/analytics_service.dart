@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/project.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
 
 class AnalyticsService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -86,5 +87,19 @@ class AnalyticsService {
           final data = snapshot.data() as Map<String, dynamic>;
           return List<Map<String, dynamic>>.from(data['trends'] ?? []);
         });
+  }
+
+  Future<void> logEvent(
+    String eventName, {
+    Map<String, dynamic>? parameters,
+  }) async {
+    try {
+      await FirebaseAnalytics.instance.logEvent(
+        name: eventName,
+        parameters: parameters,
+      );
+    } catch (e) {
+      print('Error logging analytics event: $e');
+    }
   }
 } 

@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../models/comment.dart';
 
 class SocialService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -52,34 +53,42 @@ class SocialService {
   }
 
   // Add a comment to a project
-  Future<void> addComment(String projectId, String comment) async {
-    final user = _auth.currentUser;
-    if (user == null) throw Exception('Must be signed in to comment');
+  Future<void> addComment({
+    required String projectId,
+    required String text,
+    required String authorId,
+    required String authorName,
+  }) async {
+    final comment = Comment(
+      id: '', // Will be set by Firestore
+      projectId: projectId,
+      text: text,
+      authorId: authorId,
+      authorName: authorName,
+      createdAt: DateTime.now(),
+      editedAt: null,
+      likedBy: [],
+      replyCount: 0,
+    );
 
     await _firestore
         .collection('projects')
         .doc(projectId)
         .collection('comments')
-        .add({
-          'comment': comment,
-          'userId': user.uid,
-          'userName': user.displayName ?? 'Anonymous',
-          'userPhoto': user.photoURL,
-          'timestamp': FieldValue.serverTimestamp(),
-          'likeCount': 0,
-          'likedBy': [],
-          'reactions': {},
-        });
+        .add(comment.toJson());
   }
 
   // Get comments for a project
-  Stream<QuerySnapshot> getComments(String projectId) {
+  Stream<List<Comment>> getComments(String projectId) {
     return _firestore
         .collection('projects')
         .doc(projectId)
         .collection('comments')
-        .orderBy('timestamp', descending: true)
-        .snapshots();
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => Comment.fromJson({...doc.data(), 'id': doc.id}))
+            .toList());
   }
 
   // Check if user has liked a project
@@ -111,44 +120,39 @@ class SocialService {
         .collection('comments')
         .doc(commentId)
         .snapshots()
-        .map((doc) {
-          if (!doc.exists) return false;
-          final likedBy = List<String>.from(doc.data()?['likedBy'] ?? []);
-          return likedBy.contains(user.uid);
-        });
+        .map((snapshot) {
+      if (!snapshot.exists) return false;
+      final comment = Comment.fromJson({...snapshot.data()!, 'id': snapshot.id});
+      return comment.likedBy.contains(user.uid);
+    });
   }
 
   // Toggle comment like
   Future<void> toggleCommentLike(String projectId, String commentId) async {
     final user = _auth.currentUser;
-    if (user == null) throw Exception('Must be signed in to like comments');
+    if (user == null) return;
 
-    final commentRef = _firestore
+    final docRef = _firestore
         .collection('projects')
         .doc(projectId)
         .collection('comments')
         .doc(commentId);
 
-    return _firestore.runTransaction((transaction) async {
-      final snapshot = await transaction.get(commentRef);
-      if (!snapshot.exists) throw Exception('Comment not found');
+    await _firestore.runTransaction((transaction) async {
+      final snapshot = await transaction.get(docRef);
+      if (!snapshot.exists) return;
 
-      final likedBy = List<String>.from(snapshot.data()?['likedBy'] ?? []);
-      final isLiked = likedBy.contains(user.uid);
+      final comment = Comment.fromJson({...snapshot.data()!, 'id': snapshot.id});
+      final userId = user.uid;
+      final likedBy = List<String>.from(comment.likedBy);
 
-      if (isLiked) {
-        likedBy.remove(user.uid);
-        transaction.update(commentRef, {
-          'likedBy': likedBy,
-          'likeCount': FieldValue.increment(-1),
-        });
+      if (likedBy.contains(userId)) {
+        likedBy.remove(userId);
       } else {
-        likedBy.add(user.uid);
-        transaction.update(commentRef, {
-          'likedBy': likedBy,
-          'likeCount': FieldValue.increment(1),
-        });
+        likedBy.add(userId);
       }
+
+      transaction.update(docRef, {'likedBy': likedBy});
     });
   }
 
@@ -218,5 +222,14 @@ class SocialService {
 
       transaction.update(commentRef, {'reactions': reactions});
     });
+  }
+
+  Future<void> deleteComment(String projectId, String commentId) async {
+    await _firestore
+        .collection('projects')
+        .doc(projectId)
+        .collection('comments')
+        .doc(commentId)
+        .delete();
   }
 } 

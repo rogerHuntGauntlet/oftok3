@@ -35,7 +35,7 @@ class CommentService {
   // Add a new comment
   Future<Comment> addComment({
     required String videoId,
-    required String userId,
+    required String authorId,
     required String text,
     String? parentId,
   }) async {
@@ -43,10 +43,12 @@ class CommentService {
     final comment = Comment(
       id: commentId,
       videoId: videoId,
-      userId: userId,
+      authorId: authorId,
+      authorName: 'Anonymous', // Default name if not provided
       text: text,
       createdAt: DateTime.now(),
       likedBy: [],
+      replyCount: 0,
       parentId: parentId,
     );
 
@@ -74,7 +76,7 @@ class CommentService {
   }
 
   // Toggle reaction on a comment
-  Future<void> toggleReaction(String commentId, String emoji, String userId) async {
+  Future<void> toggleReaction(String commentId, String emoji, String authorId) async {
     final docRef = _firestore.collection('comments').doc(commentId);
     
     await _firestore.runTransaction((transaction) async {
@@ -89,13 +91,13 @@ class CommentService {
       }
 
       final userReactions = reactions[emoji]!;
-      if (userReactions.contains(userId)) {
-        userReactions.remove(userId);
+      if (userReactions.contains(authorId)) {
+        userReactions.remove(authorId);
         if (userReactions.isEmpty) {
           reactions.remove(emoji);
         }
       } else {
-        userReactions.add(userId);
+        userReactions.add(authorId);
       }
 
       transaction.update(docRef, {'reactions': reactions});
@@ -103,7 +105,7 @@ class CommentService {
   }
 
   // Toggle like on a comment
-  Future<void> toggleLike(String commentId, String userId) async {
+  Future<void> toggleLike(String commentId, String authorId) async {
     final docRef = _firestore.collection('comments').doc(commentId);
     
     await _firestore.runTransaction((transaction) async {
@@ -113,10 +115,10 @@ class CommentService {
       final comment = Comment.fromJson(doc.data()!);
       final likedBy = List<String>.from(comment.likedBy);
 
-      if (likedBy.contains(userId)) {
-        likedBy.remove(userId);
+      if (likedBy.contains(authorId)) {
+        likedBy.remove(authorId);
       } else {
-        likedBy.add(userId);
+        likedBy.add(authorId);
       }
 
       transaction.update(docRef, {'likedBy': likedBy});

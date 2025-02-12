@@ -2,86 +2,136 @@ import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'media_kit_player_service.dart';
 
-typedef PlayerFactory = MediaKitPlayerService Function();
-
-/// A pool of reusable video players to optimize memory usage and performance
 class PlayerPool {
   final int maxPlayers;
   final Map<String, MediaKitPlayerService> _activePlayers = {};
   final Queue<MediaKitPlayerService> _availablePlayers = Queue();
-  final PlayerFactory _createPlayer;
+  final Set<String> _preloadingUrls = {};
   bool _isDisposed = false;
 
-  PlayerPool({
-    this.maxPlayers = 3,
-    PlayerFactory? createPlayer,
-  }) : _createPlayer = createPlayer ?? (() => MediaKitPlayerService()) {
+  // Stats for monitoring
+  int get activePlayerCount => _activePlayers.length;
+  int get availablePlayerCount => _availablePlayers.length;
+  bool get hasAvailablePlayers => _availablePlayers.isNotEmpty;
+
+  PlayerPool({required this.maxPlayers}) {
     assert(maxPlayers > 0, 'maxPlayers must be greater than 0');
   }
 
-  /// Get a player for a specific video URL
-  /// If a player already exists for this URL, returns that player
-  /// Otherwise, returns a new or recycled player
   Future<MediaKitPlayerService> checkoutPlayer(String videoUrl) async {
     if (_isDisposed) {
       throw StateError('PlayerPool has been disposed');
     }
 
-    // If we already have a player for this URL, return it
+    // Check if player already exists for this URL
     if (_activePlayers.containsKey(videoUrl)) {
-      debugPrint('🎬 Returning existing player for $videoUrl');
       return _activePlayers[videoUrl]!;
     }
 
     MediaKitPlayerService player;
-    
+
     // Try to reuse an available player
     if (_availablePlayers.isNotEmpty) {
-      debugPrint('♻️ Reusing player from pool');
       player = _availablePlayers.removeFirst();
-      await player.initialize(videoUrl);
+      try {
+        await player.setSource(videoUrl);
+      } catch (e) {
+        // If setting source fails, create new player
+        await player.dispose();
+        player = await _createNewPlayer(videoUrl);
+      }
     } else if (_activePlayers.length < maxPlayers) {
       // Create new player if under limit
-      debugPrint('🆕 Creating new player');
-      player = _createPlayer();
-      await player.initialize(videoUrl);
+      player = await _createNewPlayer(videoUrl);
     } else {
-      // Recycle least recently used player
-      debugPrint('🔄 Recycling least recently used player');
-      String oldestUrl = _activePlayers.keys.first;
-      player = _activePlayers.remove(oldestUrl)!;
-      await player.initialize(videoUrl);
+      // If at capacity, recycle least recently used player
+      final lruUrl = _findLeastRecentlyUsedUrl();
+      player = _activePlayers.remove(lruUrl)!;
+      await player.setSource(videoUrl);
     }
 
     _activePlayers[videoUrl] = player;
     return player;
   }
 
-  /// Return a player to the pool for reuse
-  Future<void> returnPlayer(String videoUrl) async {
-    if (_isDisposed) {
-      throw StateError('PlayerPool has been disposed');
+  String _findLeastRecentlyUsedUrl() {
+    // Find a URL that's not currently being preloaded
+    for (final url in _activePlayers.keys) {
+      if (!_preloadingUrls.contains(url)) {
+        return url;
+      }
     }
+    // If all are being preloaded, return the first one
+    return _activePlayers.keys.first;
+  }
+
+  Future<void> returnPlayer(String videoUrl) async {
+    if (_isDisposed) return;
 
     final player = _activePlayers.remove(videoUrl);
     if (player != null) {
-      await player.pause();
-      _availablePlayers.add(player);
-      debugPrint('↩️ Player returned to pool for $videoUrl');
+      try {
+        await player.pause();
+        if (_availablePlayers.length < maxPlayers ~/ 2) {
+          _availablePlayers.add(player);
+        } else {
+          await player.dispose();
+        }
+      } catch (e) {
+        debugPrint('Error returning player: $e');
+        await player.dispose();
+      }
     }
   }
 
-  /// Get the number of active players
-  int get activePlayerCount => _activePlayers.length;
+  Future<void> preloadPlayer(String videoUrl) async {
+    if (_isDisposed || 
+        _activePlayers.containsKey(videoUrl) || 
+        _preloadingUrls.contains(videoUrl)) {
+      return;
+    }
 
-  /// Get the number of available players
-  int get availablePlayerCount => _availablePlayers.length;
+    try {
+      _preloadingUrls.add(videoUrl);
+      final player = await checkoutPlayer(videoUrl);
+      await player.preload();
+    } catch (e) {
+      debugPrint('Error preloading player: $e');
+    } finally {
+      _preloadingUrls.remove(videoUrl);
+    }
+  }
 
-  /// Dispose all players and clear the pool
+  Future<MediaKitPlayerService> _createNewPlayer(String videoUrl) async {
+    final player = MediaKitPlayerService();
+    await player.initialize(videoUrl);
+    return player;
+  }
+
+  Future<void> cleanupInactivePlayers() async {
+    if (_isDisposed) return;
+
+    // Dispose all available players that exceed half the max
+    while (_availablePlayers.length > maxPlayers ~/ 2) {
+      final player = _availablePlayers.removeLast();
+      await player.dispose();
+    }
+
+    // Cleanup any active players that aren't being used
+    final urlsToRemove = <String>[];
+    for (final entry in _activePlayers.entries) {
+      if (!_preloadingUrls.contains(entry.key)) {
+        urlsToRemove.add(entry.key);
+      }
+    }
+
+    for (final url in urlsToRemove) {
+      await returnPlayer(url);
+    }
+  }
+
   Future<void> dispose() async {
     if (_isDisposed) return;
-    
-    debugPrint('🗑️ Disposing PlayerPool');
     _isDisposed = true;
 
     // Dispose all active players
@@ -95,5 +145,7 @@ class PlayerPool {
       final player = _availablePlayers.removeFirst();
       await player.dispose();
     }
+
+    _preloadingUrls.clear();
   }
 } 

@@ -10,12 +10,41 @@ import 'package:http/http.dart' as http;
 import '../models/video.dart';
 import '../services/ai_caption_service.dart';
 import './video_generation_service.dart';
+import 'dart:math';
+import 'dart:convert';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import '../widgets/error_dialog.dart';
+import 'package:flutter/material.dart';
 
 class VideoService {
   final FirebaseStorage _storage = FirebaseStorage.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final _uuid = Uuid();
   final _aiCaptionService = AICaptionService();
+  
+  // Get the API URL and secret from environment variables
+  final String _apiUrl = dotenv.env['VERCEL_API_URL'] ?? 'https://vercel-deploy-alpha-five.vercel.app';
+  final String _apiSecret = dotenv.env['API_SECRET_KEY'] ?? '';
+
+  Future<T> _retryOperation<T>(Future<T> Function() operation, {int maxAttempts = 3}) async {
+    int attempt = 0;
+    while (attempt < maxAttempts) {
+      try {
+        // Add exponential backoff delay
+        if (attempt > 0) {
+          final delay = Duration(milliseconds: (pow(2, attempt) * 1000).toInt());
+          await Future.delayed(delay);
+        }
+        return await operation();
+      } catch (e) {
+        attempt++;
+        if (attempt >= maxAttempts) rethrow;
+        print('Operation failed (attempt $attempt/$maxAttempts): $e');
+        print('Retrying after delay...');
+      }
+    }
+    throw Exception('Operation failed after $maxAttempts attempts');
+  }
 
   // Get all videos not in a specific project
   Future<List<Video>> getAvailableVideos(List<String> excludeVideoIds) async {
@@ -157,40 +186,36 @@ class VideoService {
     }
   }
 
-  // Convert video to HLS format
-  Future<String> convertVideoToHLS(File videoFile, String videoId) async {
+  // Function to generate thumbnail
+  Future<String?> generateAndUploadThumbnail(File videoFile, String videoId) async {
+    final tempDir = await getTemporaryDirectory();
+    final thumbnailPath = '${tempDir.path}/${videoId}_thumb.jpg';
+    
     try {
-      // Create temporary directory for HLS files
-      final tempDir = await getTemporaryDirectory();
-      final hlsDir = Directory('${tempDir.path}/hls_$videoId');
-      await hlsDir.create(recursive: true);
-
-      final outputPath = '${hlsDir.path}/playlist.m3u8';
-      
-      // FFmpeg command for HLS conversion with multiple quality levels
-      final command = '-i ${videoFile.path} '
-          '-filter_complex "[0:v]split=3[v1][v2][v3]; '
-          '[v1]scale=w=640:h=360[v1out]; [v2]scale=w=842:h=480[v2out]; [v3]scale=w=1280:h=720[v3out]" '
-          '-map "[v1out]" -map "[v2out]" -map "[v3out]" -map 0:a -map 0:a -map 0:a '
-          '-c:v libx264 -crf 22 -c:a aac -ar 48000 '
-          '-var_stream_map "v:0,a:0,name:360p v:1,a:1,name:480p v:2,a:2,name:720p" '
-          '-master_pl_name master.m3u8 '
-          '-f hls -hls_time 6 -hls_list_size 0 '
-          '-hls_segment_filename "${hlsDir.path}/%v_segment%d.ts" '
-          '$outputPath';
-
-      // Execute FFmpeg command
+      // Generate thumbnail using FFmpeg
+      final command = '-i ${videoFile.path} -vframes 1 -an -s 1280x720 -ss 1 $thumbnailPath';
       final session = await FFmpegKit.execute(command);
       final returnCode = await session.getReturnCode();
-
+      
       if (returnCode?.isValueSuccess() ?? false) {
-        return hlsDir.path;
-      } else {
-        final logs = await session.getLogs();
-        throw Exception('FFmpeg conversion failed: ${logs.join("\n")}');
+        // Upload to Firebase Storage
+        final thumbnailRef = _storage.ref().child('thumbnails/$videoId.jpg');
+        await thumbnailRef.putFile(
+          File(thumbnailPath),
+          SettableMetadata(contentType: 'image/jpeg'),
+        );
+        
+        // Get download URL
+        final thumbnailUrl = await thumbnailRef.getDownloadURL();
+        
+        // Cleanup
+        await File(thumbnailPath).delete();
+        return thumbnailUrl;
       }
+      return null;
     } catch (e) {
-      throw Exception('Failed to convert video to HLS: $e');
+      print('Error generating thumbnail: $e');
+      return null;
     }
   }
 
@@ -246,99 +271,94 @@ class VideoService {
     required String userId,
     required String title,
     required int duration,
-    Function(double)? onProgress,
+    required BuildContext context,
+    Function(double progress, String status)? onProgress,
   }) async {
     final String videoId = _uuid.v4();
-    final String videoFileName = '$videoId.mp4';
-    String? hlsUrl;
-    String? thumbnailUrl;
     
     try {
-      // Upload original video to Firebase Storage with progress monitoring
-      final videoRef = _storage.ref().child('videos/$videoFileName');
+      // Step 1: Upload original video to Firebase
+      onProgress?.call(0.1, 'Uploading video...');
+      
+      final videoRef = _storage.ref().child('videos/$videoId.mp4');
       final uploadTask = videoRef.putFile(
         videoFile,
         SettableMetadata(contentType: 'video/mp4'),
       );
-
-      // Monitor upload progress
-      uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
-        final progress = snapshot.bytesTransferred / snapshot.totalBytes;
-        onProgress?.call(progress * 0.3); // 30% progress for initial upload
-      });
-
-      // Get video URL
-      final snapshot = await uploadTask.whenComplete(() {});
-      final String videoUrl = await snapshot.ref.getDownloadURL();
-
-      // Generate thumbnail
-      onProgress?.call(0.4); // 40% progress
-      thumbnailUrl = await generateAndUploadThumbnail(videoFile, videoId);
-
-      // Convert video to HLS
-      onProgress?.call(0.5); // 50% progress after thumbnail
-      final hlsDirPath = await convertVideoToHLS(videoFile, videoId);
       
-      // Upload HLS files
-      onProgress?.call(0.7); // 70% progress after conversion
-      hlsUrl = await uploadHLSFiles(hlsDirPath, videoId);
-      onProgress?.call(0.9); // 90% progress after HLS upload
+      // Monitor upload progress
+      uploadTask.snapshotEvents.listen((snapshot) {
+        final progress = snapshot.bytesTransferred / snapshot.totalBytes;
+        onProgress?.call(0.1 + (progress * 0.3), 'Uploading video: ${(progress * 100).toInt()}%');
+      });
+      
+      final snapshot = await uploadTask;
+      final videoUrl = await snapshot.ref.getDownloadURL();
 
-      // Log detailed file info
-      final metadata = await snapshot.ref.getMetadata();
-      print('=== Video Upload Complete ===');
-      print('File name: ${metadata.name}');
-      print('Full path: ${metadata.fullPath}');
-      print('Size: ${metadata.size} bytes');
-      print('Content type: ${metadata.contentType}');
-      print('Created time: ${metadata.timeCreated}');
-      print('Updated time: ${metadata.updated}');
-      print('MD5 hash: ${metadata.md5Hash}');
-      print('Download URL: $videoUrl');
-      print('HLS URL: $hlsUrl');
-      print('Thumbnail URL: $thumbnailUrl');
-      print('========================');
+      // Step 2: Send to Vercel API for processing
+      onProgress?.call(0.4, 'Processing video...');
+      
+      final apiEndpoint = '$_apiUrl/api';
+      print('\n=== Sending Video Processing Request ===');
+      print('API Endpoint: $apiEndpoint');
+      print('Video URL: $videoUrl');
+      print('Video ID: $videoId');
+      
+      final response = await http.post(
+        Uri.parse(apiEndpoint),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_apiSecret',
+        },
+        body: jsonEncode({
+          'videoUrl': videoUrl,
+          'videoId': videoId,
+          'prompt': title, // Using the title as the prompt for processing
+        }),
+      );
 
-      // Generate AI metadata
-      print('Generating AI metadata...');
-      final aiResponse = await _aiCaptionService.generateProjectDetails(title);
-      final String finalTitle = aiResponse['title'] ?? title;
-      final String? finalDescription = aiResponse['description'];
-      final List<String> finalTags = (aiResponse['tags'] as List<dynamic>?)?.cast<String>() ?? [];
+      print('\n=== API Response ===');
+      print('Status Code: ${response.statusCode}');
+      print('Response Headers: ${response.headers}');
+      print('Response Body: ${response.body}');
 
-      onProgress?.call(1.0); // 100% progress
+      if (response.statusCode != 200) {
+        throw Exception('Failed to process video: ${response.body}');
+      }
 
-      // Create video document in Firestore
+      // Step 3: Parse the response from Vercel
+      final result = jsonDecode(response.body);
+      
+      // Step 4: Create video document with processed data
+      onProgress?.call(0.9, 'Saving video details...');
       final videoData = Video(
         id: videoId,
-        title: finalTitle,
-        description: finalDescription,
+        title: title,
         url: videoUrl,
-        hlsUrl: hlsUrl,
-        thumbnailUrl: thumbnailUrl,
+        hlsUrl: result['hlsUrl'],
+        thumbnailUrl: result['thumbnailUrl'],
         userId: userId,
         uploadedAt: DateTime.now(),
         duration: duration,
-        tags: finalTags,
+        tags: result['tags'] != null ? List<String>.from(result['tags']) : [],
+        description: result['description'],
       );
-
+      
       await _firestore
           .collection('videos')
           .doc(videoId)
           .set(videoData.toJson());
-
+      
+      onProgress?.call(1.0, 'Upload complete!');
       return videoData;
+      
     } catch (e) {
-      // Clean up the uploaded files if operation fails
-      try {
-        await _storage.ref().child('videos/$videoFileName').delete();
-        await _storage.ref().child('videos/$videoId/hls').delete();
-        if (thumbnailUrl != null) {
-          await _storage.ref().child('thumbnails/$videoId.jpg').delete();
-        }
-      } catch (_) {
-        // Ignore cleanup errors
-      }
+      print('Error uploading video: $e');
+      ErrorDialog.show(
+        context,
+        title: 'Failed to upload video',
+        message: e.toString(),
+      );
       throw Exception('Failed to upload video: $e');
     }
   }
@@ -895,50 +915,6 @@ class VideoService {
     }
   }
 
-  // Generate thumbnail from video file
-  Future<String?> generateAndUploadThumbnail(File videoFile, String videoId) async {
-    try {
-      final tempDir = await getTemporaryDirectory();
-      final thumbnailPath = '${tempDir.path}/${videoId}_thumb.jpg';
-      
-      // FFmpeg command to extract first frame
-      final command = '-i ${videoFile.path} -vframes 1 -an -s 1280x720 -ss 0 $thumbnailPath';
-      
-      // Execute FFmpeg command
-      final session = await FFmpegKit.execute(command);
-      final returnCode = await session.getReturnCode();
-
-      if (returnCode?.isValueSuccess() ?? false) {
-        // Upload thumbnail to Firebase Storage
-        final thumbnailFile = File(thumbnailPath);
-        final thumbnailRef = _storage.ref().child('thumbnails/$videoId.jpg');
-        
-        await thumbnailRef.putFile(
-          thumbnailFile,
-          SettableMetadata(contentType: 'image/jpeg'),
-        );
-
-        // Get thumbnail URL
-        final thumbnailUrl = await thumbnailRef.getDownloadURL();
-        
-        // Cleanup
-        try {
-          await thumbnailFile.delete();
-        } catch (e) {
-          print('Warning: Failed to delete temporary thumbnail file: $e');
-        }
-        
-        return thumbnailUrl;
-      } else {
-        final logs = await session.getLogs();
-        throw Exception('FFmpeg thumbnail generation failed: ${logs.join("\n")}');
-      }
-    } catch (e) {
-      print('Error generating thumbnail: $e');
-      return null;
-    }
-  }
-
   // Batch update existing videos with HLS and metadata
   Future<void> batchUpdateVideosWithHLSAndMetadata({
     Function(int total)? onTotalVideos,
@@ -1088,6 +1064,58 @@ class VideoService {
     } catch (e) {
       print('Error in batch update: $e');
       throw Exception('Failed to batch update videos: $e');
+    }
+  }
+
+  // Convert video to HLS format
+  Future<String> convertVideoToHLS(File videoFile, String videoId) async {
+    final tempDir = await getTemporaryDirectory();
+    final hlsDir = Directory('${tempDir.path}/hls_$videoId');
+    await hlsDir.create(recursive: true);
+    
+    try {
+      // Convert to HLS using FFmpeg
+      final command = '-i ${videoFile.path} '
+          '-profile:v baseline -level 3.0 '
+          '-start_number 0 -hls_time 10 -hls_list_size 0 -f hls '
+          '${hlsDir.path}/playlist.m3u8';
+      
+      final session = await FFmpegKit.execute(command);
+      final returnCode = await session.getReturnCode();
+      
+      if (returnCode?.isValueSuccess() ?? false) {
+        // Upload all HLS files
+        final files = await hlsDir.list().toList();
+        for (var file in files) {
+          if (file is File) {
+            final fileName = file.path.split('/').last;
+            final ref = _storage.ref().child('videos/$videoId/hls/$fileName');
+            
+            final contentType = fileName.endsWith('.m3u8') 
+                ? 'application/x-mpegURL' 
+                : 'video/MP2T';
+            
+            await ref.putFile(
+              file,
+              SettableMetadata(contentType: contentType),
+            );
+          }
+        }
+        
+        // Get playlist URL
+        final hlsUrl = await _storage
+            .ref()
+            .child('videos/$videoId/hls/playlist.m3u8')
+            .getDownloadURL();
+        
+        // Cleanup
+        await hlsDir.delete(recursive: true);
+        return hlsUrl;
+      }
+      throw Exception('FFmpeg conversion failed');
+    } catch (e) {
+      print('Error converting to HLS: $e');
+      throw Exception('Failed to convert video to HLS: $e');
     }
   }
 } 

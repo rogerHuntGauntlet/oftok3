@@ -33,7 +33,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
     try {
       await _commentService.addComment(
         videoId: widget.videoId,
-        userId: widget.userId,
+        authorId: widget.userId,
         text: _commentController.text.trim(),
         parentId: _replyingTo?.id,
       );
@@ -123,7 +123,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                       userId: widget.userId,
                       onReply: (comment) {
                         setState(() => _replyingTo = comment);
-                        _commentController.text = '@${comment.userId} ';
+                        _commentController.text = '@${comment.authorId} ';
                         _commentController.selection = TextSelection.fromPosition(
                           TextPosition(offset: _commentController.text.length),
                         );
@@ -143,7 +143,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
               child: Row(
                 children: [
                   Text(
-                    'Replying to @${_replyingTo!.userId}',
+                    'Replying to @${_replyingTo!.authorId}',
                     style: const TextStyle(
                       color: Colors.blue,
                       fontWeight: FontWeight.w500,
@@ -276,7 +276,7 @@ class _CommentTileState extends State<CommentTile> {
   }
 
   void _showEditMenu() {
-    if (widget.comment.userId != widget.userId) return;
+    if (widget.comment.authorId != widget.userId) return;
 
     showModalBottomSheet(
       context: context,
@@ -333,7 +333,7 @@ class _CommentTileState extends State<CommentTile> {
                     CircleAvatar(
                       backgroundColor: Colors.grey[300],
                       child: Text(
-                        widget.comment.userId[0].toUpperCase(),
+                        widget.comment.authorId[0].toUpperCase(),
                         style: const TextStyle(
                           color: Colors.black54,
                           fontWeight: FontWeight.bold,
@@ -348,7 +348,7 @@ class _CommentTileState extends State<CommentTile> {
                           Row(
                             children: [
                               Text(
-                                '@${widget.comment.userId}',
+                                '@${widget.comment.authorId}',
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                 ),
@@ -364,7 +364,7 @@ class _CommentTileState extends State<CommentTile> {
                                 ),
                               ],
                               const Spacer(),
-                              if (widget.comment.userId == widget.userId)
+                              if (widget.comment.authorId == widget.userId)
                                 IconButton(
                                   icon: const Icon(Icons.more_vert),
                                   onPressed: _showEditMenu,

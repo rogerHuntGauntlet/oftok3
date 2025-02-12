@@ -11,6 +11,8 @@ class MediaKitPlayerService implements VideoPlayerService {
   StreamController<bool>? _playingController;
   StreamSubscription? _positionSubscription;
   StreamSubscription? _playingSubscription;
+  bool _isPreloaded = false;
+  String? _currentUrl;
 
   // Expose video controller for UI rendering
   VideoController? get videoController => _videoController;
@@ -20,49 +22,20 @@ class MediaKitPlayerService implements VideoPlayerService {
     print('MediaKitPlayerService: Initializing with URL: $videoUrl');
     
     try {
-      _player?.dispose();
-      _player = Player();
+      await dispose(); // Clean up any existing resources
+      _player = Player(configuration: const PlayerConfiguration(
+        // Use default configuration for now
+        bufferSize: 32 * 1024, // 32KB buffer
+      ));
       _videoController = VideoController(_player!);
       
-      print('MediaKitPlayerService: Player and controller created');
+      // Initialize controllers
+      _positionController = StreamController<Duration>.broadcast();
+      _playingController = StreamController<bool>.broadcast();
       
-      // Initialize position and playing controllers if not already created
-      _positionController ??= StreamController<Duration>.broadcast();
-      _playingController ??= StreamController<bool>.broadcast();
+      await setSource(videoUrl);
       
-      await _player!.open(Media(videoUrl));
-      print('MediaKitPlayerService: Media opened successfully');
-      
-      // Enable looping
-      _player!.setPlaylistMode(PlaylistMode.loop);
-      
-      // Setup position updates with more frequent updates
-      _positionSubscription = _player!.streams.position
-          .distinct() // Only emit when position actually changes
-          .listen(
-        (position) {
-          if (_positionController?.isClosed == false) {
-            _positionController?.add(position);
-          }
-        },
-        onError: (error) {
-          print('Position stream error: $error');
-        },
-      );
-
-      // Setup playing state updates with error handling
-      _playingSubscription = _player!.streams.playing
-          .distinct() // Only emit when state actually changes
-          .listen(
-        (playing) {
-          if (_playingController?.isClosed == false) {
-            _playingController?.add(playing);
-          }
-        },
-        onError: (error) {
-          print('Playing stream error: $error');
-        },
-      );
+      print('MediaKitPlayerService: Player initialized successfully');
     } catch (e, stackTrace) {
       print('MediaKitPlayerService Error: $e');
       print('MediaKitPlayerService Stack trace: $stackTrace');
@@ -70,9 +43,94 @@ class MediaKitPlayerService implements VideoPlayerService {
     }
   }
 
+  Future<void> setSource(String videoUrl) async {
+    if (_currentUrl == videoUrl && _isPreloaded) {
+      return; // Already loaded this URL
+    }
+
+    print('MediaKitPlayerService: Setting source: $videoUrl');
+    
+    try {
+      await _player!.open(
+        Media(videoUrl),
+        play: false, // Don't auto-play
+      );
+      
+      _currentUrl = videoUrl;
+      _isPreloaded = false;
+
+      // Setup streams
+      _setupStreams();
+      
+      // Enable looping
+      await _player!.setPlaylistMode(PlaylistMode.loop);
+      
+      print('MediaKitPlayerService: Source set successfully');
+    } catch (e) {
+      print('MediaKitPlayerService Error setting source: $e');
+      rethrow;
+    }
+  }
+
+  void _setupStreams() {
+    // Cancel existing subscriptions
+    _positionSubscription?.cancel();
+    _playingSubscription?.cancel();
+
+    // Setup position updates
+    _positionSubscription = _player!.streams.position
+        .distinct() // Only emit when position actually changes
+        .listen(
+      (position) {
+        if (_positionController?.isClosed == false) {
+          _positionController?.add(position);
+        }
+      },
+      onError: (error) {
+        print('Position stream error: $error');
+      },
+    );
+
+    // Setup playing state updates
+    _playingSubscription = _player!.streams.playing
+        .distinct()
+        .listen(
+      (playing) {
+        if (_playingController?.isClosed == false) {
+          _playingController?.add(playing);
+        }
+      },
+      onError: (error) {
+        print('Playing stream error: $error');
+      },
+    );
+  }
+
+  @override
+  Future<void> preload() async {
+    if (_isPreloaded || _player == null || _currentUrl == null) return;
+
+    try {
+      // Start buffering by seeking to beginning
+      await _player!.seek(Duration.zero);
+      
+      // Wait for initial buffer
+      await _player!.streams.buffer.first;
+      
+      _isPreloaded = true;
+      print('MediaKitPlayerService: Preload complete for $_currentUrl');
+    } catch (e) {
+      print('MediaKitPlayerService Error preloading: $e');
+      _isPreloaded = false;
+    }
+  }
+
   @override
   Future<void> play() async {
     try {
+      if (!_isPreloaded) {
+        await preload();
+      }
       await _player?.play();
     } catch (e) {
       print('Play error: $e');
@@ -132,11 +190,11 @@ class MediaKitPlayerService implements VideoPlayerService {
 
   @override
   Stream<Duration> get positionStream =>
-    _positionController?.stream ?? const Stream.empty();
+      _positionController?.stream ?? const Stream.empty();
 
   @override
   Stream<bool> get playingStream =>
-    _playingController?.stream ?? const Stream.empty();
+      _playingController?.stream ?? const Stream.empty();
 
   @override
   Future<void> dispose() async {
@@ -157,6 +215,9 @@ class MediaKitPlayerService implements VideoPlayerService {
       _videoController = null;
       await _player?.dispose();
       _player = null;
+      
+      _isPreloaded = false;
+      _currentUrl = null;
     } catch (e) {
       print('Dispose error: $e');
     }

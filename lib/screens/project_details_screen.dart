@@ -1,27 +1,38 @@
 import 'dart:io';
+import 'dart:async';  // For StreamSubscription
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models/app_user.dart';
 import '../models/project.dart';
 import '../models/video.dart';
+import '../models/comment.dart';
 import '../services/video_service.dart';
 import '../services/project_service.dart';
 import '../services/user_service.dart';
 import '../services/video/video_preload_service.dart';
 import '../widgets/video_thumbnail.dart';
 import '../widgets/video_generation_dialog.dart';
-import 'video_feed_screen.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'projects_screen.dart';
-import 'project_network_screen.dart';
-import 'notifications_screen.dart';
 import '../widgets/token_purchase_dialog.dart';
 import '../widgets/app_bottom_navigation.dart';
 import '../services/social_service.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../screens/project_analytics_screen.dart';
 import '../services/analytics_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
+import 'video_feed_screen.dart';
+import 'projects_screen.dart';
+import 'project_network_screen.dart';
+import 'notifications_screen.dart';
+import 'project_analytics_screen.dart';
+import '../screens/project_details_widgets/index.dart';
+import '../screens/project_details_widgets/token_display.dart' as project_details;
+import '../screens/project_details_widgets/video_card.dart' as project_details;
+import '../screens/project_details_widgets/video_grid.dart' as project_details;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:app_settings/app_settings.dart';
+import '../widgets/error_dialog.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final Project project;
@@ -54,47 +65,98 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   DateTime? _sessionStartTime;
   String? _progressStatus;
   double? _progressValue;
+  late StreamSubscription<Project?> _projectStreamSubscription;
+  late Project _currentProject;
 
   @override
   void initState() {
     super.initState();
-    
-    // Initialize the project stream with error handling and trigger immediate load
+    _currentProject = widget.project;
     _initializeProjectStream();
   }
 
   void _initializeProjectStream() {
-    _projectStream = _projectService
-        .getProjectStream(widget.project.id)
-        .handleError((error) {
-          print('Error in project stream: $error');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error loading project: $error'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-        })
-        .asBroadcastStream();  // Make sure it's a broadcast stream from the start
+    // Initialize with the current project data first
+    _projectStream = Stream.value(_currentProject).asyncExpand((initialProject) {
+      // Then switch to the live stream
+      return _projectService
+          .getProjectStream(_currentProject.id)
+          .map<Project>((updatedProject) {
+            // Merge initial project data with updates to ensure we don't lose data
+            if (updatedProject != null) {
+              _currentProject = Project(
+                id: updatedProject.id,
+                name: updatedProject.name,
+                description: updatedProject.description,
+                userId: updatedProject.userId,
+                videoIds: updatedProject.videoIds,
+                collaboratorIds: updatedProject.collaboratorIds,
+                isPublic: updatedProject.isPublic,
+                score: updatedProject.score,
+                likeCount: updatedProject.likeCount,
+                commentCount: updatedProject.commentCount,
+                createdAt: updatedProject.createdAt,
+                shareCount: updatedProject.shareCount,
+                totalSessionDuration: updatedProject.totalSessionDuration,
+                sessionCount: updatedProject.sessionCount,
+                videoCompletionRates: updatedProject.videoCompletionRates,
+                lastEngagement: updatedProject.lastEngagement,
+              );
+              return _currentProject;
+            }
+            return initialProject;
+          })
+          .handleError((error) {
+            print('Error in project stream: $error');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Error loading project: $error'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+          });
+    }).asBroadcastStream();
 
     // Force immediate data load and start session tracking
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       // Increment project score
-      await _projectService.incrementProjectScore(widget.project.id, 1);
+      await _projectService.incrementProjectScore(_currentProject.id, 1);
       
       // Start session tracking
       _sessionStartTime = DateTime.now();
+    });
+
+    _projectStreamSubscription = _projectStream.listen((project) {
+      if (mounted && project != null) {
+        setState(() {
+          _currentProject = project;
+        });
+      }
+    });
+  }
+
+  void _refreshProjectStream() {
+    setState(() {
+      _initializeProjectStream();
     });
   }
 
   @override
   void dispose() {
+    _projectStreamSubscription.cancel();
     // Update session duration when leaving the screen
     if (_sessionStartTime != null) {
       final sessionDuration = DateTime.now().difference(_sessionStartTime!);
-      _projectService.updateSessionMetrics(widget.project.id, sessionDuration);
+      _analyticsService.logEvent(
+        'screen_time',
+        parameters: {
+          'screen': 'project_details',
+          'duration': sessionDuration.inSeconds,
+          'project_id': _currentProject.id,
+        },
+      );
     }
     
     _searchController.dispose();
@@ -102,64 +164,181 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     super.dispose();
   }
 
+  Future<bool> _requestCameraPermission() async {
+    final status = await Permission.camera.status;
+    if (status.isGranted) {
+      return true;
+    }
+
+    if (status.isDenied) {
+      final result = await Permission.camera.request();
+      return result.isGranted;
+    }
+
+    if (status.isPermanentlyDenied) {
+      // Show dialog to open app settings
+      if (!mounted) return false;
+      
+      final shouldOpenSettings = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Camera Permission Required'),
+          content: const Text('Please enable camera access in settings to record videos.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Open Settings'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldOpenSettings == true) {
+        await openAppSettings();
+        // Check if permission was granted after returning from settings
+        return await Permission.camera.status.isGranted;
+      }
+    }
+
+    return false;
+  }
+
   Future<void> _uploadVideo() async {
-    final video = await _imagePicker.pickVideo(
-      source: ImageSource.gallery,
-      maxDuration: const Duration(minutes: 10),
-    );
-    
-    if (video == null) return;
-
-    setState(() {
-      _isLoading = true;
-      _uploadProgress = 0;
-    });
-
     try {
-      final uploadedVideo = await _videoService.uploadVideo(
-        videoFile: File(video.path),
-        userId: widget.project.userId,
-        title: 'Video ${widget.project.videoIds.length + 1}',
-        duration: 0,
-        onProgress: (progress) {
-          setState(() {
-            _uploadProgress = progress;
-          });
-        },
-      );
-
-      await _projectService.addVideoToProject(
-        widget.project.id,
-        uploadedVideo.id,
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Video uploaded successfully')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error uploading video: ${e.toString()}'),
-            backgroundColor: Colors.red,
+      final source = await showDialog<ImageSource>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Upload Video'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.camera_alt),
+                title: const Text('Record Video'),
+                onTap: () => Navigator.pop(context, ImageSource.camera),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library),
+                title: const Text('Choose from Gallery'),
+                onTap: () => Navigator.pop(context, ImageSource.gallery),
+              ),
+            ],
           ),
-        );
+        ),
+      );
+
+      if (source == null) return;
+
+      if (source == ImageSource.camera) {
+        final hasCameraPermission = await _requestCameraPermission();
+        if (!hasCameraPermission) {
+          if (!mounted) return;
+          ErrorDialog.show(
+            context,
+            message: 'Camera permission is required to record videos',
+          );
+          return;
+        }
       }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _uploadProgress = 0;
-        });
+
+      final XFile? video = await ImagePicker().pickVideo(
+        source: source,
+        maxDuration: const Duration(minutes: 10),
+      );
+
+      if (video == null) return;
+
+      if (!mounted) return;
+      
+      setState(() {
+        _isLoading = true;
+        _uploadProgress = 0;
+        _progressStatus = 'Preparing video...';
+      });
+
+      final videoFile = File(video.path);
+      final videoService = VideoService();
+      
+      // Add retry logic for upload
+      int retryAttempts = 3;
+      int currentAttempt = 0;
+      bool uploadSuccess = false;
+
+      while (currentAttempt < retryAttempts && !uploadSuccess) {
+        try {
+          currentAttempt++;
+          if (currentAttempt > 1) {
+            // Add delay between retries
+            if (!mounted) return;
+            setState(() {
+              _progressStatus = 'Retrying upload (attempt $currentAttempt of $retryAttempts)...';
+            });
+            await Future.delayed(Duration(seconds: currentAttempt * 2));
+          }
+
+          final uploadedVideo = await videoService.uploadVideo(
+            videoFile: videoFile,
+            userId: FirebaseAuth.instance.currentUser?.uid ?? '',
+            title: 'Video ${_currentProject.videoIds.length + 1}',
+            duration: 0,
+            context: context,
+            onProgress: (progress, status) {
+              if (!mounted) return;
+              setState(() {
+                _uploadProgress = progress;
+                _progressStatus = status;
+              });
+            },
+          );
+
+          // Add video to project after successful upload
+          await _projectService.addVideoToProject(
+            _currentProject.id,
+            uploadedVideo.id,
+          );
+
+          uploadSuccess = true;
+        } catch (e) {
+          print('Upload attempt $currentAttempt failed: $e');
+          if (currentAttempt == retryAttempts) {
+            rethrow;
+          }
+        }
       }
+
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _uploadProgress = 0;
+        _progressStatus = null;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Video uploaded successfully')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _uploadProgress = 0;
+        _progressStatus = null;
+      });
+      
+      ErrorDialog.show(
+        context,
+        title: 'Error uploading video',
+        message: e.toString(),
+      );
     }
   }
 
   Future<void> _viewVideos(String projectId, {int startIndex = 0}) async {
     try {
-      final videos = await _videoService.getProjectVideos(widget.project.videoIds);
+      final videos = await _videoService.getProjectVideos([projectId]);
       if (!mounted) return;
 
       Navigator.of(context).push(
@@ -168,7 +347,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
             projectId: projectId,
             videoUrls: videos.map((v) => v.url).toList(),
             videoIds: videos.map((v) => v.id).toList(),
-            projectName: widget.project.name,
+            projectName: _currentProject.name,
             preloadService: widget.preloadService,
             initialIndex: startIndex,
           ),
@@ -208,7 +387,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     if (confirmed == true && mounted) {
       try {
         await _projectService.removeVideoFromProject(
-          widget.project.id,
+          _currentProject.id,
           video.id,
         );
         if (mounted) {
@@ -237,7 +416,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       newVideoIds.insert(newIndex, movedId);
 
       // Update the project with new order
-      await _projectService.updateVideoOrder(widget.project.id, newVideoIds);
+      await _projectService.updateVideoOrder(_currentProject.id, newVideoIds);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -351,13 +530,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                                       final users = snapshot.data!;
                                       
                                       // Add debug prints and use widget.project directly
-                                      print('Direct Project Data: ${widget.project}');
-                                      print('Direct Project CollaboratorIds: ${widget.project.collaboratorIds}');
+                                      print('Direct Project Data: ${_currentProject}');
+                                      print('Direct Project CollaboratorIds: ${_currentProject.collaboratorIds}');
                                       print('Initial Users Count: ${users.length}');
                                       
                                       // Filter out collaborator IDs after initial load using widget.project
                                       final filteredUsers = users.where((user) {
-                                        final collaboratorIds = widget.project.collaboratorIds;
+                                        final collaboratorIds = _currentProject.collaboratorIds;
                                         print('Checking user ${user.id} against collaboratorIds: $collaboratorIds');
                                         return !collaboratorIds.contains(user.id);
                                       }).toList();
@@ -394,13 +573,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                                                 try {
                                                   final userId = user.id;
                                                   await _projectService.addCollaborator(
-                                                    widget.project.id,
+                                                    _currentProject.id,
                                                     userId,
                                                   );
                                                   if (mounted) {
-                                                    // Update local state immediately
                                                     setState(() {
-                                                      widget.project.collaboratorIds.add(userId);
+                                                      _currentProject.collaboratorIds.add(userId);
                                                     });
                                                     ScaffoldMessenger.of(context).showSnackBar(
                                                       SnackBar(
@@ -437,10 +615,10 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                       StreamBuilder<Project?>(
                         stream: _projectStream,
                         builder: (context, projectSnapshot) {
-                          print('Manage tab - Project data direct: ${widget.project}');
-                          print('Manage tab - Collaborator IDs direct: ${widget.project.collaboratorIds}');
+                          print('Manage tab - Project data direct: ${_currentProject}');
+                          print('Manage tab - Collaborator IDs direct: ${_currentProject.collaboratorIds}');
 
-                          final collaboratorIds = widget.project.collaboratorIds;
+                          final collaboratorIds = _currentProject.collaboratorIds;
                           print('Manage tab - Using Collaborator IDs: $collaboratorIds');
 
                           if (collaboratorIds.isEmpty) {
@@ -496,13 +674,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                                         try {
                                           final userId = user.id;
                                           await _projectService.removeCollaborator(
-                                            widget.project.id,
+                                            _currentProject.id,
                                             userId,
                                           );
                                           if (mounted) {
                                             // Update local state immediately
                                             setState(() {
-                                              widget.project.collaboratorIds.remove(userId);
+                                              _currentProject.collaboratorIds.remove(userId);
                                             });
                                             ScaffoldMessenger.of(context).showSnackBar(
                                               SnackBar(
@@ -694,7 +872,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                 itemBuilder: (context, index) {
                   final project = projects[index];
                   // Don't show current project
-                  if (project.id == widget.project.id) return const SizedBox.shrink();
+                  if (project.id == _currentProject.id) return const SizedBox.shrink();
                   
                   return ListTile(
                     title: Text(project.name),
@@ -741,1354 +919,32 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     );
   }
 
-  Widget _buildVideoCard(Video video) {
-    return Card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (video.thumbnailUrl != null)
-            Image.network(
-              video.thumbnailUrl!,
-              fit: BoxFit.cover,
-              height: 200,
-              width: double.infinity,
-            ),
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  video.title,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                if (video.description != null)
-                  Text(
-                    video.description!,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                Text(
-                  'Duration: ${Duration(seconds: video.duration).toString().split('.').first}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProjectHeader() {
-    final currentUser = FirebaseAuth.instance.currentUser;
-    
-    return StreamBuilder<Project?>(
-      stream: _projectStream,
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Card(
-            child: Center(
-              child: CircularProgressIndicator(),
-            ),
-          );
-        }
-
-        final project = snapshot.data!;
-        
-        return Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                Theme.of(context).colorScheme.secondary.withOpacity(0.05),
-              ],
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Project Info Section
-              Padding(
-                padding: const EdgeInsets.all(20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Project Title and Description
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                project.name,
-                                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                  color: Theme.of(context).colorScheme.onSurface,
-                                ),
-                              ),
-                              if (project.description != null)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 8.0),
-                                  child: Text(
-                                    project.description!,
-                                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    // Stats Row
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.05),
-                            blurRadius: 10,
-                            spreadRadius: 0,
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          StreamBuilder<bool>(
-                            stream: _socialService.getLikeStatus(project.id),
-                            builder: (context, likeSnapshot) {
-                              final isLiked = likeSnapshot.data ?? false;
-                              return _buildSocialStat(
-                                icon: Icons.favorite,
-                                count: project.likeCount,
-                                label: 'Likes',
-                                color: Colors.pink,
-                                isActive: isLiked,
-                              );
-                            }
-                          ),
-                          _buildSocialStat(
-                            icon: Icons.comment,
-                            count: project.commentCount,
-                            label: 'Comments',
-                            color: Colors.blue,
-                          ),
-                          GestureDetector(
-                            onTap: () => _toggleProjectVisibility(!project.isPublic),
-                            child: _buildSocialStat(
-                              icon: project.isPublic ? Icons.public : Icons.lock_outline,
-                              count: null,
-                              label: project.isPublic ? 'Public' : 'Private',
-                              color: project.isPublic ? Colors.green : Colors.grey,
-                              isActive: project.isPublic,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Action Buttons Section
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(20),
-                    topRight: Radius.circular(20),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 10,
-                      offset: const Offset(0, -5),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        StreamBuilder<bool>(
-                          stream: _socialService.getLikeStatus(project.id),
-                          builder: (context, likeSnapshot) {
-                            final isLiked = likeSnapshot.data ?? false;
-                            return _buildSocialButton(
-                              icon: isLiked ? Icons.favorite : Icons.favorite_border,
-                              label: isLiked ? 'Liked' : 'Like',
-                              isActive: isLiked,
-                              onPressed: () async {
-                                if (currentUser != null) {
-                                  try {
-                                    await _socialService.toggleLike(project.id);
-                                  } catch (e) {
-                                    if (mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(
-                                          content: Text('Error toggling like: $e'),
-                                          backgroundColor: Colors.red,
-                                        ),
-                                      );
-                                    }
-                                  }
-                                } else {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Please sign in to like projects'),
-                                    ),
-                                  );
-                                }
-                              },
-                            );
-                          }
-                        ),
-                        _buildSocialButton(
-                          icon: Icons.comment,
-                          label: 'Comment',
-                          onPressed: () => _showCommentsSheet(context),
-                        ),
-                        _buildSocialButton(
-                          icon: Icons.share,
-                          label: 'Share',
-                          onPressed: () async {
-                            final shareUrl = await _socialService.generateShareUrl(project.id);
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Share link copied: $shareUrl'),
-                                  action: SnackBarAction(
-                                    label: 'Copy',
-                                    onPressed: () {
-                                      // Add clipboard functionality here
-                                    },
-                                  ),
-                                ),
-                              );
-                            }
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    // Project Score Section
-                    GestureDetector(
-                      onTap: () => _showScoreExplanation(context, project.score),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Theme.of(context).colorScheme.primary.withOpacity(0.2),
-                            width: 1,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.star,
-                              size: 20,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Project Score: ${project.score.toStringAsFixed(1)}',
-                              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            Icon(
-                              Icons.info_outline,
-                              size: 16,
-                              color: Theme.of(context).colorScheme.primary.withOpacity(0.5),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildSocialStat({
-    required IconData icon,
-    int? count,
-    required String label,
-    required Color color,
-    bool isActive = false,
-  }) {
-    return TweenAnimationBuilder<int>(
-      tween: IntTween(begin: 0, end: count ?? 0),
-      duration: const Duration(milliseconds: 500),
-      builder: (context, value, child) {
-        return Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: isActive ? color.withOpacity(0.1) : Colors.transparent,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                icon,
-                color: isActive ? color : Colors.grey,
-                size: 24,
-              ),
-            ),
-            const SizedBox(height: 4),
-            if (count != null) ...[
-              Text(
-                value.toString(),
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: isActive ? color : null,
-                ),
-              ),
-            ],
-            Text(
-              label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: isActive ? color : Colors.grey,
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildSocialButton({
-    required IconData icon,
-    required String label,
-    bool isActive = false,
-    required VoidCallback onPressed,
-  }) {
-    // Use filled heart icon when active and icon is favorite
-    final IconData displayIcon = icon == Icons.favorite 
-        ? (isActive ? Icons.favorite : Icons.favorite_border)
-        : icon;
-
-    return Container(
-      decoration: BoxDecoration(
-        gradient: isActive ? LinearGradient(
-          colors: [
-            Colors.pink.shade400,
-            Colors.purple.shade400,
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ) : null,
-        borderRadius: BorderRadius.circular(20),
-        border: !isActive ? Border.all(
-          color: Colors.pink.withOpacity(0.5),
-          width: 1,
-        ) : null,
-        boxShadow: isActive ? [
-          BoxShadow(
-            color: Colors.pink.withOpacity(0.3),
-            blurRadius: 8,
-            spreadRadius: 1,
-          ),
-        ] : null,
-      ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(20),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  displayIcon,
-                  color: isActive ? Colors.white : Colors.pink,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: isActive ? Colors.white : Colors.pink,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showCommentsSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.9,
-        minChildSize: 0.5,
-        maxChildSize: 0.9,
-        builder: (_, controller) => Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Theme.of(context).colorScheme.surface,
-                Theme.of(context).colorScheme.surface.withOpacity(0.95),
-              ],
-            ),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.2),
-                blurRadius: 20,
-                spreadRadius: 5,
-              ),
-            ],
-          ),
-          child: Column(
-            children: [
-              // Handle bar
-              Center(
-                child: Container(
-                  margin: const EdgeInsets.only(top: 12),
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    const Text(
-                      'Comments',
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: StreamBuilder<QuerySnapshot>(
-                  stream: _socialService.getComments(widget.project.id),
-                  builder: (context, snapshot) {
-                    if (snapshot.hasError) {
-                      return Center(child: Text('Error: ${snapshot.error}'));
-                    }
-
-                    if (!snapshot.hasData) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-
-                    final comments = snapshot.data!.docs;
-                    
-                    if (comments.isEmpty) {
-                      return Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.chat_bubble_outline,
-                              size: 64,
-                              color: Colors.grey.withOpacity(0.5),
-                            ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              'No comments yet',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.grey,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            const Text(
-                              'Be the first to share your thoughts!',
-                              style: TextStyle(
-                                color: Colors.grey,
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    }
-
-                    return ListView.builder(
-                      controller: controller,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      itemCount: comments.length,
-                      itemBuilder: (context, index) {
-                        final comment = comments[index].data() as Map<String, dynamic>;
-                        return FutureBuilder<AppUser?>(
-                          future: _userService.getUser(comment['userId']),
-                          builder: (context, snapshot) {
-                            if (snapshot.hasError) {
-                              return const ListTile(
-                                title: Text('Error loading user'),
-                              );
-                            }
-
-                            final user = snapshot.data;
-                            if (user == null) {
-                              return const ListTile(
-                                title: Text('User not found'),
-                              );
-                            }
-
-                            return ListTile(
-                              leading: CircleAvatar(
-                                backgroundImage: user.photoUrl != null 
-                                  ? NetworkImage(user.photoUrl!) 
-                                  : null,
-                                child: user.photoUrl == null 
-                                  ? Text(user.displayName[0].toUpperCase()) 
-                                  : null,
-                              ),
-                              title: Text(user.displayName),
-                              subtitle: Text(_formatTimestamp(comment['timestamp'])),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.more_vert),
-                                onPressed: () {
-                                  // Show comment options
-                                },
-                              ),
-                            );
-                          },
-                        );
-                      },
-                    );
-                  },
-                ),
-              ),
-              Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 4,
-                      offset: const Offset(0, -2),
-                    ),
-                  ],
-                ),
-                padding: EdgeInsets.only(
-                  left: 16,
-                  right: 16,
-                  bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-                  top: 16,
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _commentController,
-                        decoration: InputDecoration(
-                          hintText: 'Add a comment...',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(24),
-                            borderSide: BorderSide.none,
-                          ),
-                          filled: true,
-                          fillColor: Theme.of(context).colorScheme.surface,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 12,
-                          ),
-                        ),
-                        maxLines: null,
-                        textCapitalization: TextCapitalization.sentences,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Theme.of(context).colorScheme.primary,
-                            Theme.of(context).colorScheme.secondary,
-                          ],
-                        ),
-                        shape: BoxShape.circle,
-                      ),
-                      child: IconButton(
-                        icon: const Icon(Icons.send),
-                        color: Colors.white,
-                        onPressed: () {
-                          final comment = _commentController.text.trim();
-                          if (comment.isNotEmpty) {
-                            _postComment();
-                          }
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  String _formatTimestamp(dynamic timestamp) {
-    if (timestamp == null) return 'No date';
-    
-    DateTime? date;
-    if (timestamp is Timestamp) {
-      date = timestamp.toDate();
-    } else if (timestamp is DateTime) {
-      date = timestamp;
-    } else if (timestamp is String) {
-      date = DateTime.tryParse(timestamp);
-    }
-    
-    if (date == null) return 'Invalid date';
-    
-    final now = DateTime.now();
-    final difference = now.difference(date);
-
-    if (difference.inDays > 7) {
-      return '${date.day}/${date.month}/${date.year}';
-    } else if (difference.inDays > 0) {
-      return '${difference.inDays}d ago';
-    } else if (difference.inHours > 0) {
-      return '${difference.inHours}h ago';
-    } else if (difference.inMinutes > 0) {
-      return '${difference.inMinutes}m ago';
-    } else {
-      return 'Just now';
-    }
-  }
-
-  void _showGenerateVideoDialog() {
-    // Store the context before the async operation
-    final scaffoldContext = context;
-    
-    showDialog(
-      context: context,
-      builder: (context) => VideoGenerationDialog(
-        onVideoGenerated: (String videoUrl) async {
-          try {
-            // Create a new video document
-            final video = await _videoService.createVideo(
-              url: videoUrl,
-              userId: FirebaseAuth.instance.currentUser!.uid,
-              projectId: widget.project.id,
-            );
-
-            // Add video to project
-            await _projectService.addVideoToProject(widget.project.id, video.id);
-
-            // Force refresh the project stream
-            setState(() {
-              _projectStream = _projectService
-                  .getProjectStream(widget.project.id)
-                  .asBroadcastStream();
-            });
-
-            // Show success message using stored context
-            if (mounted) {
-              ScaffoldMessenger.of(scaffoldContext).showSnackBar(
-                const SnackBar(
-                  content: Text('Video generated and added to project successfully!'),
-                  backgroundColor: Colors.green,
-                ),
-              );
-            }
-          } catch (e) {
-            print('Error adding generated video: $e');
-            if (mounted) {
-              ScaffoldMessenger.of(scaffoldContext).showSnackBar(
-                SnackBar(
-                  content: Text('Error adding video: $e'),
-                  backgroundColor: Colors.red,
-                ),
-              );
-            }
-          }
-        },
-      ),
-    );
-  }
-
-  Future<void> _generateAndViewVideo(String prompt) async {
-    try {
-      // Show loading dialog
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-
-      // Generate and save the video
-      final video = await _videoService.generateAndSaveVideo(
-        prompt: prompt,
-        projectId: widget.project.id,
-        userId: FirebaseAuth.instance.currentUser!.uid,
-        onProgress: (status, progress) {
-          // Update loading dialog with progress
-          if (mounted) {
-            Navigator.of(context).pop(); // Remove old dialog
-            showDialog(
-              context: context,
-              barrierDismissible: false,
-              builder: (context) => AlertDialog(
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(value: progress),
-                    const SizedBox(height: 16),
-                    Text(status.toString().split('.').last),
-                  ],
-                ),
-              ),
-            );
-          }
-        },
-        onError: (message) {
-          // Show error message
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(message)),
-            );
-          }
-        },
-      );
-
-      // Close loading dialog
-      if (mounted) {
-        Navigator.of(context).pop();
-      }
-
-      // Add video to project
-      await _projectService.addVideoToProject(widget.project.id, video.id);
-
-      // Show success dialog with verification
-      if (mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: const Text('Video Generated'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.check_circle_outline,
-                  color: Colors.green,
-                  size: 48,
-                ),
-                const SizedBox(height: 16),
-                const Text('Video has been generated successfully!'),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: () async {
-                    try {
-                      // Verify video URL is accessible
-                      final response = await http.head(Uri.parse(video.url));
-                      if (response.statusCode != 200) {
-                        throw Exception('Video URL is not accessible');
-                      }
-
-                      if (!mounted) return;
-                      Navigator.of(context).pop(); // Close success dialog
-
-                      // Show video in feed
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => VideoFeedScreen(
-                            projectId: widget.project.id,
-                            videoUrls: [video.url],
-                            videoIds: [video.id],
-                            projectName: widget.project.name,
-                            preloadService: widget.preloadService,
-                          ),
-                        ),
-                      );
-                    } catch (e) {
-                      print('Error verifying video URL: $e');
-                      if (!mounted) return;
-                      
-                      Navigator.of(context).pop(); // Close success dialog
-                      
-                      // Show error and refresh screen
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Video is not ready yet. Refreshing...'),
-                          backgroundColor: Colors.orange,
-                        ),
-                      );
-
-                      // Refresh the screen
-                      setState(() {
-                        _projectStream = _projectService
-                            .getProjectStream(widget.project.id)
-                            .asBroadcastStream();
-                      });
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.play_arrow),
-                      SizedBox(width: 8),
-                      Text('Watch Video'),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      // Close loading dialog if open
-      if (mounted && Navigator.of(context).canPop()) {
-        Navigator.of(context).pop();
-      }
-
-      // Show error
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error generating video: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _postComment() async {
-    if (_commentController.text.trim().isEmpty) return;
-
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please sign in to comment')),
-        );
-        return;
-      }
-
-      // Extract username from email
-      final email = user.email ?? '';
-      final username = email.split('@')[0];
-
-      final commentData = {
-        'text': _commentController.text.trim(),
-        'userId': user.uid,
-        'userName': username,  // Use extracted username instead of displayName
-        'userPhoto': user.photoURL,
-        'timestamp': FieldValue.serverTimestamp(),
-        'likeCount': 0,
-        'likedBy': [],
-        'reactions': {},
-      };
-
-      await _firestore
-          .collection('projects')
-          .doc(widget.project.id)
-          .collection('comments')
-          .add(commentData);
-
-      if (mounted) {
-        _commentController.clear();
-        FocusScope.of(context).unfocus();
-      }
-    } catch (e) {
-      print('Error posting comment: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error posting comment: $e')),
-        );
-      }
-    }
-  }
-
-  void _showScoreExplanation(BuildContext context, double score) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.star,
-                  color: Theme.of(context).colorScheme.primary,
-                  size: 28,
-                ),
-                const SizedBox(width: 12),
-                Text(
-                  'Project Score: ${score.toStringAsFixed(1)}',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.of(context).pop(),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'What affects your project score:',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-            const SizedBox(height: 12),
-            _buildScoreFactorRow(
-              icon: Icons.favorite,
-              color: Colors.pink,
-              text: 'Likes: +1 point each',
-            ),
-            const SizedBox(height: 8),
-            _buildScoreFactorRow(
-              icon: Icons.comment,
-              color: Colors.blue,
-              text: 'Comments: +2 points each',
-            ),
-            const SizedBox(height: 8),
-            _buildScoreFactorRow(
-              icon: Icons.share,
-              color: Colors.green,
-              text: 'Shares: +3 points each',
-            ),
-            const SizedBox(height: 8),
-            _buildScoreFactorRow(
-              icon: Icons.visibility,
-              color: Colors.purple,
-              text: 'Views: +1 point per 10 views',
-            ),
-            const SizedBox(height: 8),
-            _buildScoreFactorRow(
-              icon: Icons.public,
-              color: Colors.teal,
-              text: 'Public projects: +5 bonus points',
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'Keep engaging with the community to increase your project score! Higher scores give your projects more visibility in the network.',
-              style: TextStyle(
-                fontStyle: FontStyle.italic,
-                color: Colors.grey,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildScoreFactorRow({
-    required IconData icon,
-    required Color color,
-    required String text,
-  }) {
-    return Row(
-      children: [
-        Icon(icon, color: color, size: 20),
-        const SizedBox(width: 12),
-        Text(text),
-      ],
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('Project Details'),
-            Flexible(
-              child: Text(
-                widget.project.name,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onPrimary.withOpacity(0.8),
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.person_add),
-            onPressed: () => _showInviteCollaboratorsOverlay(),
-            tooltip: 'Invite Collaborators',
-          ),
-          IconButton(
-            icon: const Icon(Icons.analytics),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => ProjectAnalyticsScreen(project: widget.project),
-                ),
-              );
-            },
-          ),
-        ],
-      ),
-      body: StreamBuilder<Project?>(
-        stream: _projectStream,
-        builder: (context, projectSnapshot) {
-          if (projectSnapshot.hasError) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                  const SizedBox(height: 16),
-                  Text('Error: ${projectSnapshot.error}'),
-                  const SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: () {
-                      setState(() {
-                        _projectStream = _projectService
-                            .getProjectStream(widget.project.id)
-                            .asBroadcastStream();
-                      });
-                    },
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          if (!projectSnapshot.hasData) {
-            return const Center(
-              child: CircularProgressIndicator(),
-            );
-          }
-
-          final project = projectSnapshot.data!;
-
-          return Stack(
-            children: [
-              RefreshIndicator(
-                onRefresh: () async {
-                  setState(() {
-                    _projectStream = _projectService
-                        .getProjectStream(widget.project.id)
-                        .asBroadcastStream();
-                  });
-                },
-                child: CustomScrollView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  slivers: [
-                    SliverToBoxAdapter(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildProjectHeader(),
-                          Padding(
-                            padding: const EdgeInsets.all(16.0),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Videos (${project.videoIds.length})',
-                                  style: Theme.of(context).textTheme.titleLarge,
-                                ),
-                              ],
-                            ),
-                          ),
-                          if (project.videoIds.isEmpty)
-                            _buildEmptyVideoState()
-                          else
-                            _buildVideoGrid(project),
-                          const SizedBox(height: 100), // Bottom padding for FAB
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (_isLoading) _buildLoadingOverlay(),
-            ],
-          );
-        },
-      ),
-      bottomNavigationBar: AppBottomNavigation(currentIndex: 0),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showAddVideoOptions,
-        child: const Icon(Icons.add),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-    );
-  }
-
-  Widget _buildEmptyVideoState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(
-            Icons.video_library_outlined,
-            size: 64,
-            color: Colors.grey,
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'No videos yet',
-            style: TextStyle(
-              fontSize: 20,
-              color: Colors.grey,
-            ),
-          ),
-          const SizedBox(height: 24),
-          ElevatedButton.icon(
-            onPressed: _uploadVideo,
-            icon: const Icon(Icons.upload),
-            label: const Text('Upload Your First Video'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildVideoGrid(Project project) {
-    return FutureBuilder<List<Video>>(
-      future: _videoService.getProjectVideos(project.videoIds),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return Center(child: Text('Error loading videos: ${snapshot.error}'));
-        }
-
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final videos = snapshot.data!;
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: ElevatedButton.icon(
-                onPressed: () => _viewVideos(project.id),
-                icon: const Icon(Icons.play_circle),
-                label: const Text('View in Feed'),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 48),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              padding: EdgeInsets.zero,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                childAspectRatio: 0.8,
-                crossAxisSpacing: 0,
-                mainAxisSpacing: 0,
-              ),
-              itemCount: videos.length,
-              itemBuilder: (context, index) {
-                final video = videos[index];
-                return GestureDetector(
-                  onTap: () => _viewVideos(project.id, startIndex: index),
-                  onLongPress: () => _showVideoOptions(video),
-                  child: Card(
-                    margin: EdgeInsets.zero,
-                    shape: const RoundedRectangleBorder(
-                      borderRadius: BorderRadius.zero,
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        VideoThumbnail(
-                          videoUrl: video.url,
-                          thumbnailUrl: video.thumbnailUrl,
-                          previewUrl: video.previewUrl,
-                        ),
-                        Container(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [
-                                Colors.transparent,
-                                Colors.black.withOpacity(0.7),
-                              ],
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          bottom: 8,
-                          left: 8,
-                          right: 8,
-                          child: Text(
-                            video.title,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        Center(
-                          child: Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.5),
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(
-                              Icons.play_arrow,
-                              color: Colors.white,
-                              size: 24,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildLoadingOverlay() {
-    return Container(
-      color: Colors.black54,
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(
-              value: _uploadProgress,
-              valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Uploading: ${(_uploadProgress * 100).toStringAsFixed(1)}%',
-              style: const TextStyle(color: Colors.white),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _toggleProjectVisibility(bool value) async {
-    try {
-      await _projectService.toggleProjectVisibility(
-        widget.project.id,
-        value,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Project is now ${value ? 'public' : 'private'}',
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error updating visibility: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  void _showVideoOptions(Video video) {
+  void _showAddVideoOptions() {
     showModalBottomSheet(
       context: context,
       builder: (context) => Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
-            leading: const Icon(Icons.edit),
-            title: const Text('Edit Details'),
+            leading: const Icon(Icons.upload_file),
+            title: const Text('Upload Video'),
             onTap: () {
               Navigator.pop(context);
-              _showVideoMetadataDialog(video);
+              _uploadVideo();
             },
           ),
           ListTile(
-            leading: const Icon(Icons.delete),
-            title: const Text('Remove'),
+            leading: const Icon(Icons.auto_awesome),
+            title: Row(
+              children: [
+                const Text('Generate Video'),
+                const SizedBox(width: 8),
+                project_details.TokenDisplay(userService: _userService),
+              ],
+            ),
             onTap: () {
               Navigator.pop(context);
-              _showDeleteConfirmation(video);
+              _showVideoGenerationDialog();
             },
           ),
         ],
@@ -2096,78 +952,10 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     );
   }
 
-  void _showAddVideoOptions() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.symmetric(vertical: 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.upload),
-              title: const Text('Upload Video'),
-              onTap: () {
-                Navigator.pop(context);
-                _uploadVideo();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.video_library),
-              title: const Text('Find Videos'),
-              onTap: () => _findVideos(),
-            ),
-            ListTile(
-              leading: const Icon(Icons.movie_creation),
-              title: Row(
-                children: [
-                  const Text('Generate AI Video'),
-                  const SizedBox(width: 8),
-                  _buildTokenDisplay(),
-                ],
-              ),
-              onTap: () => _showVideoGenerationDialog(),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTokenDisplay() {
-    return FutureBuilder<AppUser?>(
-      future: _userService.getCurrentUser(),
-      builder: (context, snapshot) {
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primaryContainer,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.token, size: 14),
-              const SizedBox(width: 4),
-              Text(
-                '${snapshot.data?.tokens ?? 0}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
   Future<void> _findVideos() async {
     Navigator.pop(context);
     try {
-      final availableVideos = await _videoService.getAvailableVideos(widget.project.videoIds);
+      final availableVideos = await _videoService.getAvailableVideos(_currentProject.videoIds);
       if (!mounted) return;
       if (availableVideos.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2178,7 +966,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => VideoFeedScreen(
-            projectId: widget.project.id,
+            projectId: _currentProject.id,
             videoUrls: availableVideos.map((v) => v.url).toList(),
             videoIds: availableVideos.map((v) => v.id).toList(),
             projectName: 'Available Videos',
@@ -2198,53 +986,361 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     }
   }
 
+  Widget _buildVideoList(List<Video> videos) {
+    return ListView.builder(
+      itemCount: videos.length,
+      padding: const EdgeInsets.all(16),
+      itemBuilder: (context, index) {
+        final video = videos[index];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: GestureDetector(
+            onTap: () => _onVideoTap(video),
+            child: project_details.VideoCard(
+              video: video,
+              onTap: () => _onVideoTap(video),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _onVideoTap(Video video) {
+    _viewVideos(_currentProject.id, startIndex: _currentProject.videoIds.indexOf(video.id));
+  }
+
+  void _showVideoOptions(Video video) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.info),
+            title: const Text('View Details'),
+            onTap: () {
+              Navigator.pop(context);
+              _showVideoMetadataDialog(video);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.save),
+            title: const Text('Save to Project'),
+            onTap: () {
+              Navigator.pop(context);
+              _showProjectSelectionDialog(video);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete),
+            title: const Text('Remove from Project'),
+            onTap: () {
+              Navigator.pop(context);
+              _showDeleteConfirmation(video);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showVideoGenerationDialog() {
-    // Store the context before the async operation
-    final scaffoldContext = context;
-    
     showDialog(
       context: context,
       builder: (context) => VideoGenerationDialog(
-        onVideoGenerated: (String videoUrl) async {
-          try {
-            // Create a new video document
-            final video = await _videoService.createVideo(
-              url: videoUrl,
-              userId: FirebaseAuth.instance.currentUser!.uid,
-              projectId: widget.project.id,
-            );
-
-            // Add video to project
-            await _projectService.addVideoToProject(widget.project.id, video.id);
-
-            // Force refresh the project stream
-            setState(() {
-              _projectStream = _projectService
-                  .getProjectStream(widget.project.id)
-                  .asBroadcastStream();
-            });
-
-            // Show success message using stored context
-            if (mounted) {
-              ScaffoldMessenger.of(scaffoldContext).showSnackBar(
-                const SnackBar(
-                  content: Text('Video generated and added to project successfully!'),
-                  backgroundColor: Colors.green,
-                ),
-              );
-            }
-          } catch (e) {
-            print('Error adding generated video: $e');
-            if (mounted) {
-              ScaffoldMessenger.of(scaffoldContext).showSnackBar(
-                SnackBar(
-                  content: Text('Error adding video: $e'),
-                  backgroundColor: Colors.red,
-                ),
-              );
-            }
+        onVideoGenerated: (video) {
+          if (mounted) {
+            setState(() {});
           }
         },
+      ),
+    );
+  }
+
+  void _showCommentsSheet(Project project) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.9,
+        minChildSize: 0.5,
+        maxChildSize: 0.9,
+        builder: (_, controller) => Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Comments',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: StreamBuilder<List<Comment>>(
+                  stream: _socialService.getComments(project.id),
+                  builder: (context, snapshot) {
+                    if (snapshot.hasError) {
+                      return Center(child: Text('Error: ${snapshot.error}'));
+                    }
+                    if (!snapshot.hasData) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final comments = snapshot.data!;
+                    return ListView.builder(
+                      controller: controller,
+                      itemCount: comments.length,
+                      itemBuilder: (context, index) {
+                        final comment = comments[index];
+                        return ListTile(
+                          title: Text(comment.text),
+                          subtitle: Text(comment.authorName),
+                          trailing: Text(
+                            comment.createdAt.toLocal().toString(),
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _commentController,
+                        decoration: const InputDecoration(
+                          hintText: 'Add a comment...',
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.send),
+                      onPressed: () async {
+                        final text = _commentController.text.trim();
+                        if (text.isEmpty) return;
+                        try {
+                          await _socialService.addComment(
+                            projectId: project.id,
+                            text: text,
+                            authorId: FirebaseAuth.instance.currentUser?.uid ?? '',
+                            authorName: FirebaseAuth.instance.currentUser?.displayName ?? 'Anonymous',
+                          );
+                          _commentController.clear();
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Error adding comment: $e'),
+                                backgroundColor: Colors.red,
+                              ),
+                            );
+                          }
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Project Details'),
+            Flexible(
+              child: StreamBuilder<Project?>(
+                stream: _projectStream,
+                builder: (context, snapshot) {
+                  return Text(
+                    snapshot.data?.name ?? _currentProject.name,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onPrimary.withOpacity(0.8),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.person_add),
+            onPressed: _showInviteCollaboratorsOverlay,
+            tooltip: 'Invite Collaborators',
+          ),
+          IconButton(
+            icon: const Icon(Icons.analytics),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ProjectAnalyticsScreen(project: _currentProject),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+      body: StreamBuilder<Project?>(
+        stream: _projectStream,
+        builder: (context, projectSnapshot) {
+          if (projectSnapshot.hasError) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                  const SizedBox(height: 16),
+                  Text('Error: ${projectSnapshot.error}'),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: _refreshProjectStream,
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          if (!projectSnapshot.hasData) {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
+          }
+
+          final project = projectSnapshot.data!;
+
+          return Stack(
+            children: [
+              RefreshIndicator(
+                onRefresh: () async {
+                  _refreshProjectStream();
+                },
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ProjectHeader(
+                            project: project,
+                            socialService: _socialService,
+                            projectService: _projectService,
+                            onRefresh: _refreshProjectStream,
+                            showCommentsSheet: (context) => _showCommentsSheet(project),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Videos (${project.videoIds.length})',
+                                  style: Theme.of(context).textTheme.titleLarge,
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (project.videoIds.isEmpty)
+                            EmptyVideoState(onUploadVideo: _uploadVideo)
+                          else
+                            project_details.VideoGrid(
+                              project: project,
+                              videoService: _videoService,
+                              onViewVideos: _viewVideos,
+                              onVideoOptions: _showVideoOptions,
+                            ),
+                          const SizedBox(height: 100), // Bottom padding for FAB
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (_isLoading) LoadingOverlay(
+                uploadProgress: _uploadProgress,
+                status: _progressStatus,
+              ),
+            ],
+          );
+        },
+      ),
+      bottomNavigationBar: AppBottomNavigation(currentIndex: 0),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showAddVideoOptions,
+        child: const Icon(Icons.add),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+    );
+  }
+}
+
+class LoadingOverlay extends StatelessWidget {
+  final double uploadProgress;
+  final String? status;
+
+  const LoadingOverlay({
+    super.key,
+    required this.uploadProgress,
+    this.status,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black54,
+      child: Center(
+        child: Card(
+          margin: const EdgeInsets.symmetric(horizontal: 32),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                if (status != null) ...[
+                  Text(
+                    status!,
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                Text(
+                  '${(uploadProgress * 100).toInt()}%',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

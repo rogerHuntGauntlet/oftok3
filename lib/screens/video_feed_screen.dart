@@ -13,6 +13,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../screens/project_details_screen.dart';
+import 'dart:async';
+import 'dart:math';
+import 'package:ohftokv3/models/comment.dart';
+
+// Define scroll direction enum
+enum VideoScrollDirection { idle, forward, reverse }
 
 class VideoFeedScreen extends StatefulWidget {
   final List<String> videoUrls;
@@ -40,7 +46,7 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   PageController? _pageController;
   late final PlayerPool _playerPool;
   int _currentPage = 0;
-  bool _isLoading = true;
+  bool _isLoading = false;  // Changed to false by default
   String? _error;
   final VideoService _videoService = VideoService();
   final ProjectService _projectService = ProjectService();
@@ -50,11 +56,23 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   bool _isDisposed = false;
   bool _isLoadingMore = false;
   bool _hasMoreVideos = true;
+  bool _isInitialized = false;  // New flag to track initialization
   
   // Add constants for player management
-  static const int _preloadDistance = 1;  // How many videos to preload ahead/behind
-  static const int _maxCachedPlayers = 3;  // Maximum number of players to keep in memory
-  static const int _loadMoreThreshold = 3;  // Load more when this many videos from the end
+  static const int _preloadDistance = 2;  // Increased from 1 to 2
+  static const int _maxCachedPlayers = 5;  // Increased from 3 to 5
+  static const int _loadMoreThreshold = 5;  // Increased from 3 to 5
+  static const double _fastScrollThreshold = 0.5;  // pixels per millisecond
+
+  // Update scroll metrics tracking
+  double _lastScrollPosition = 0;
+  DateTime _lastScrollTime = DateTime.now();
+  VideoScrollDirection _scrollDirection = VideoScrollDirection.idle;
+
+  // Add new fields for scroll optimization
+  Timer? _cleanupTimer;
+  Timer? _preloadTimer;
+  bool _isScrolling = false;
 
   @override
   void initState() {
@@ -67,7 +85,11 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     print('Project ID: ${widget.projectId ?? 'Not provided'}');
     print('=====================================');
     
-    _loadInitialVideos();
+    // Start loading immediately but don't block the UI
+    _initializeAsync();
+
+    // Schedule periodic cleanup more frequently
+    _scheduleCleanup();
   }
 
   @override
@@ -98,6 +120,9 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     print('\n🟢 === VideoFeedScreen Lifecycle: dispose ===');
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
+    
+    _cleanupTimer?.cancel();
+    _preloadTimer?.cancel();
     
     print('Disposing page controller...');
     _pageController?.dispose();
@@ -150,71 +175,51 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     }
   }
 
-  Future<void> _loadInitialVideos() async {
+  Future<void> _initializeAsync() async {
     try {
-      setState(() {
-        _isLoading = true;
-        _error = null;
-      });
-
-      List<Video> initialVideos = [];
-      
-      // First load project videos if in a project
-      if (widget.projectId != null && widget.projectId != 'doomscroll') {
-        initialVideos = await _videoService.getProjectVideos(widget.videoIds);
-      }
-      
-      // If we're in doomscroll mode or have no project videos, load available videos
-      if (initialVideos.isEmpty) {
-        initialVideos = await _videoService.getAvailableVideos([]);
-      }
-
+      // Start loading videos in the background
+      final initialVideos = await _loadInitialVideosInBackground();
       if (!mounted) return;
 
       setState(() {
         _videos = initialVideos;
-        _isLoading = false;
         _hasMoreVideos = true;
       });
 
-      _initializeVideoSystem();
+      // Initialize the video system in the background
+      await _initializeVideoSystem();
+      if (!mounted) return;
+
+      setState(() {
+        _isInitialized = true;
+      });
+
+      // Start preloading more videos for infinite scroll
+      _loadMoreVideos();
     } catch (e, stackTrace) {
-      print('Error loading initial videos: $e\n$stackTrace');
+      print('Error in initialization: $e\n$stackTrace');
       if (mounted) {
         setState(() {
           _error = e.toString();
-          _isLoading = false;
         });
       }
     }
   }
 
-  Future<void> _loadMoreVideos() async {
-    if (_isLoadingMore || !_hasMoreVideos) return;
-
-    try {
-      setState(() => _isLoadingMore = true);
-
-      // Get IDs of videos to exclude
-      final excludeIds = _videos.map((v) => v.id).toList();
-      
-      // Load next batch of available videos
-      final newVideos = await _videoService.getAvailableVideos(excludeIds);
-      
-      if (!mounted) return;
-
-      setState(() {
-        if (newVideos.isEmpty) {
-          _hasMoreVideos = false;
-        } else {
-          _videos.addAll(newVideos);
-        }
-        _isLoadingMore = false;
-      });
-    } catch (e) {
-      print('Error loading more videos: $e');
-      setState(() => _isLoadingMore = false);
+  Future<List<Video>> _loadInitialVideosInBackground() async {
+    List<Video> initialVideos = [];
+    
+    // First load project videos if in a project
+    if (widget.projectId != null && widget.projectId != 'doomscroll') {
+      initialVideos = await _videoService.getProjectVideos(widget.videoIds);
     }
+    
+    // If we're in doomscroll mode or have no project videos, load available videos
+    if (initialVideos.isEmpty) {
+      initialVideos = await _videoService.getAvailableVideos([]);
+    }
+
+    return initialVideos;
   }
 
   Future<void> _initializeVideoSystem() async {
@@ -228,39 +233,30 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
       _currentPage = widget.initialIndex;
       
       // Initialize current and adjacent videos
-      final initialRange = _getPreloadRange(widget.initialIndex);
-      print('Initial preload range: $initialRange');
-      
-      for (int i = initialRange.start.toInt(); i <= initialRange.end.toInt(); i++) {
-        if (i >= 0 && i < widget.videoUrls.length) {
-          print('Pre-initializing video at index $i');
-          await _initializeVideo(i);
+      if (_videos.isNotEmpty) {
+        final initialRange = _getPreloadRange(widget.initialIndex);
+        print('Initial preload range: $initialRange');
+        
+        // Preload the initial video first
+        await _initializeVideo(widget.initialIndex);
+        
+        // Then preload adjacent videos in the background
+        for (int i = initialRange.start.toInt(); i <= initialRange.end.toInt(); i++) {
+          if (i != widget.initialIndex && i >= 0 && i < _videos.length) {
+            _initializeVideo(i); // Don't await these
+          }
         }
-      }
-      
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
       }
     } catch (e, stackTrace) {
       print('❌ Error initializing video system:');
       print('Error: $e');
       print('Stack trace: $stackTrace');
-      if (mounted) {
-        setState(() {
-          _error = e.toString();
-          _isLoading = false;
-        });
-      }
+      rethrow;
     }
   }
 
   Future<void> _initializeVideo(int index) async {
-    if (index < 0 || index >= _videos.length) {
-      print('❌ Invalid video index: $index');
-      return;
-    }
+    if (index < 0 || index >= _videos.length || _isDisposed) return;
 
     final videoUrl = _videos[index].url;
     print('Initializing video at index $index: $videoUrl');
@@ -269,21 +265,28 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
       final player = await _playerPool.checkoutPlayer(videoUrl);
       
       // Start playing if it's the current page
-      if (index == _currentPage) {
+      if (index == _currentPage && mounted) {
         print('Auto-playing current page video');
         await player.play();
+      } else {
+        // Just preload if not current page
+        await player.preload();
       }
     } catch (e, stackTrace) {
       print('❌ Error initializing video at index $index:');
       print('Error: $e');
       print('Stack trace: $stackTrace');
-      rethrow;
     }
   }
 
   Future<void> _onPageChanged(int page) async {
     print('\n=== Page Changed: $page ===');
     if (_isDisposed) return;
+
+    // Update scroll direction
+    _scrollDirection = page > _currentPage 
+        ? VideoScrollDirection.forward 
+        : VideoScrollDirection.reverse;
 
     // Check if we need to load more videos
     if (page >= _videos.length - _loadMoreThreshold) {
@@ -322,8 +325,14 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   }
 
   RangeValues _getPreloadRange(int currentIndex) {
-    final start = (currentIndex - _preloadDistance).clamp(0, widget.videoUrls.length - 1);
-    final end = (currentIndex + _preloadDistance).clamp(0, widget.videoUrls.length - 1);
+    // If there are no videos, return a default range
+    if (_videos.isEmpty) {
+      return const RangeValues(0, 0);
+    }
+
+    // Calculate valid bounds
+    final start = (currentIndex - _preloadDistance).clamp(0, _videos.length - 1);
+    final end = (currentIndex + _preloadDistance).clamp(0, _videos.length - 1);
     return RangeValues(start.toDouble(), end.toDouble());
   }
 
@@ -568,172 +577,30 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
       return const SizedBox.shrink();
     }
     
-    return StreamBuilder<QuerySnapshot>(
+    return StreamBuilder<List<Comment>>(
       stream: _socialService.getComments(widget.projectId!),
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
+        }
         if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
-        final comments = snapshot.data!.docs;
-        if (comments.isEmpty) {
-          return const Center(
-            child: Text('No comments yet. Be the first to comment!'),
-          );
-        }
-
-        return Column(
-          children: [
-            Expanded(
-              child: ListView.builder(
-                controller: scrollController,
-                itemCount: comments.length,
-                itemBuilder: (context, index) {
-                  final comment = comments[index].data() as Map<String, dynamic>;
-                  final commentId = comments[index].id;
-                  final hasReplies = (comment['replies'] as List?)?.isNotEmpty ?? false;
-                  
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      ListTile(
-                        title: Row(
-                          children: [
-                            Text(comment['userName'] ?? 'Anonymous'),
-                            const SizedBox(width: 8),
-                            Text(
-                              _formatTimestamp(comment['timestamp'] as Timestamp),
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
-                        ),
-                        subtitle: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const SizedBox(height: 4),
-                            Text(comment['comment'] as String),
-                            const SizedBox(height: 8),
-                            Row(
-                              children: [
-                                // Like button
-                                StreamBuilder<bool>(
-                                  stream: _socialService.getCommentLikeStatus(widget.projectId!, commentId),
-                                  builder: (context, snapshot) {
-                                    final isLiked = snapshot.data ?? false;
-                                    return InkWell(
-                                      onTap: () => _socialService.toggleCommentLike(widget.projectId!, commentId),
-                                      child: Row(
-                                        children: [
-                                          Icon(
-                                            isLiked ? Icons.favorite : Icons.favorite_border,
-                                            size: 16,
-                                            color: isLiked ? Colors.red : null,
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Text('${comment['likeCount'] ?? 0}'),
-                                        ],
-                                      ),
-                                    );
-                                  }
-                                ),
-                                const SizedBox(width: 16),
-                                // Reply button
-                                InkWell(
-                                  onTap: () => _showReplyInput(commentId),
-                                  child: const Row(
-                                    children: [
-                                      Icon(Icons.reply, size: 16),
-                                      SizedBox(width: 4),
-                                      Text('Reply'),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                      // Show replies if any
-                      if (hasReplies)
-                        Padding(
-                          padding: const EdgeInsets.only(left: 56),
-                          child: StreamBuilder<QuerySnapshot>(
-                            stream: _socialService.getReplies(widget.projectId!, commentId),
-                            builder: (context, snapshot) {
-                              if (!snapshot.hasData) return const SizedBox();
-                              
-                              final replies = snapshot.data!.docs;
-                              return Column(
-                                children: replies.map((reply) {
-                                  final replyData = reply.data() as Map<String, dynamic>;
-                                  return ListTile(
-                                    dense: true,
-                                    title: Row(
-                                      children: [
-                                        Text(
-                                          replyData['userName'] ?? 'Anonymous',
-                                          style: const TextStyle(fontSize: 14),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          _formatTimestamp(replyData['timestamp'] as Timestamp),
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.grey[600],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    subtitle: Text(
-                                      replyData['text'] as String,
-                                      style: const TextStyle(fontSize: 14),
-                                    ),
-                                  );
-                                }).toList(),
-                              );
-                            },
-                          ),
-                        ),
-                    ],
-                  );
-                },
+        final comments = snapshot.data!;
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: comments.length,
+          itemBuilder: (context, index) {
+            final comment = comments[index];
+            return ListTile(
+              title: Text(comment.text),
+              subtitle: Text(comment.authorName),
+              trailing: Text(
+                comment.createdAt.toLocal().toString(),
+                style: Theme.of(context).textTheme.bodySmall,
               ),
-            ),
-            // Comment input
-            Padding(
-              padding: EdgeInsets.only(
-                left: 16,
-                right: 16,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _commentController,
-                      decoration: const InputDecoration(
-                        hintText: 'Add a comment...',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.send),
-                    onPressed: () {
-                      final comment = _commentController.text.trim();
-                      if (comment.isNotEmpty) {
-                        _handleCommentSubmit(comment);
-                        _commentController.clear();
-                        FocusScope.of(context).unfocus();
-                      }
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ],
+            );
+          },
         );
       },
     );
@@ -951,7 +818,8 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
+    // Show loading only if we have no videos yet
+    if (_videos.isEmpty && _error == null) {
       return const Scaffold(
         body: Center(
           child: CircularProgressIndicator(),
@@ -1175,9 +1043,18 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
     );
   }
 
-  void _handleCommentSubmit(String comment) {
+  Future<void> _handleCommentSubmit(String text) async {
     if (widget.projectId == null || widget.projectId == 'doomscroll') return;
-    _socialService.addComment(widget.projectId!, comment);
+    
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    await _socialService.addComment(
+      projectId: widget.projectId!,
+      text: text,
+      authorId: user.uid,
+      authorName: user.displayName ?? 'Anonymous',
+    );
   }
 
   void _handleReplySubmit(String commentId, String reply) {
@@ -1191,19 +1068,139 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> with WidgetsBindingOb
   }
 
   Future<void> _handlePreloading(RangeValues preloadRange) async {
-    // Preload adjacent videos
-    for (int i = preloadRange.start.toInt(); i <= preloadRange.end.toInt(); i++) {
+    _preloadTimer?.cancel();
+
+    // If scrolling fast, delay preloading
+    if (_isScrolling) {
+      _preloadTimer = Timer(const Duration(milliseconds: 500), () {
+        if (!_isDisposed) {
+          _executePreload(preloadRange);
+        }
+      });
+      return;
+    }
+
+    await _executePreload(preloadRange);
+  }
+
+  Future<void> _executePreload(RangeValues preloadRange) async {
+    final now = DateTime.now();
+    final scrollVelocity = (_lastScrollPosition - _currentPage).abs() / 
+        max(now.difference(_lastScrollTime).inMilliseconds, 1);
+    
+    // Update scroll metrics
+    _lastScrollPosition = _currentPage.toDouble();
+    _lastScrollTime = now;
+    _isScrolling = scrollVelocity > _fastScrollThreshold;
+
+    // Adjust preload distance based on scroll speed
+    int effectivePreloadDistance = _preloadDistance;
+    if (scrollVelocity > _fastScrollThreshold) {
+      effectivePreloadDistance = 1; // Reduce preload distance during fast scroll
+    }
+
+    // Calculate preload range
+    final start = max(0, _currentPage - effectivePreloadDistance);
+    final end = min(_videos.length - 1, _currentPage + effectivePreloadDistance);
+
+    // Preload in scroll direction first
+    final preloadOrder = List.generate(
+      (end - start + 1).toInt(),
+      (i) => i + start,
+    );
+
+    if (_scrollDirection == VideoScrollDirection.forward) {
+      preloadOrder.sort(); // Ascending order
+    } else {
+      preloadOrder.sort((a, b) => b.compareTo(a)); // Descending order
+    }
+
+    // Preload videos with delay between each
+    for (final i in preloadOrder) {
+      if (_isDisposed || !mounted) return;
       if (i >= 0 && i < _videos.length && i != _currentPage) {
         await _initializeVideo(i);
+        // Small delay between preloads to prevent overwhelming
+        await Future.delayed(const Duration(milliseconds: 100));
       }
     }
 
-    // Clean up videos outside preload range
+    // Cleanup videos outside preload range
+    final urlsToCleanup = <String>[];
     for (int i = 0; i < _videos.length; i++) {
-      if (i < preloadRange.start.toInt() || i > preloadRange.end.toInt()) {
-        final url = _videos[i].url;
-        await _playerPool.returnPlayer(url);
+      if (i < start || i > end) {
+        urlsToCleanup.add(_videos[i].url);
       }
     }
+
+    // Cleanup in batches to prevent jank
+    for (var i = 0; i < urlsToCleanup.length; i += 2) {
+      if (_isDisposed || !mounted) return;
+      final end = min(i + 2, urlsToCleanup.length);
+      await Future.wait(
+        urlsToCleanup.sublist(i, end).map((url) => _playerPool.returnPlayer(url))
+      );
+      // Small delay between cleanup batches
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  Future<void> _loadMoreVideos() async {
+    // Prevent multiple simultaneous loads
+    if (_isLoadingMore || !_hasMoreVideos || _isDisposed) return;
+
+    try {
+      setState(() {
+        _isLoadingMore = true;
+      });
+
+      List<Video> newVideos = [];
+      
+      // Load project-specific videos if in a project
+      if (widget.projectId != null && widget.projectId != 'doomscroll') {
+        // For project-specific feed, we already have all videos
+        _hasMoreVideos = false;
+      } else {
+        // For general feed, load more videos
+        final lastVideoId = _videos.isNotEmpty ? _videos.last.id : null;
+        newVideos = await _videoService.getAvailableVideos(
+          _videos.map((v) => v.id).toList(),
+        );
+        
+        if (newVideos.isEmpty) {
+          _hasMoreVideos = false;
+        }
+      }
+
+      if (!_isDisposed && mounted) {
+        setState(() {
+          _videos.addAll(newVideos);
+          _isLoadingMore = false;
+        });
+
+        // Preload new videos
+        for (int i = _videos.length - newVideos.length; i < _videos.length; i++) {
+          _initializeVideo(i);
+        }
+      }
+    } catch (e, stackTrace) {
+      print('Error loading more videos: $e\n$stackTrace');
+      if (!_isDisposed && mounted) {
+        setState(() {
+          _isLoadingMore = false;
+        });
+      }
+    }
+  }
+
+  void _scheduleCleanup() {
+    _cleanupTimer?.cancel();
+    _cleanupTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      if (!_isDisposed) {
+        _playerPool.cleanupInactivePlayers();
+      } else {
+        timer.cancel();
+      }
+    });
   }
 } 
