@@ -63,7 +63,7 @@ class VideoGenerationService {
         _platformConfig = platformConfig ?? PlatformConfigService();
 
   Future<Map<String, String>> get _headers async {
-    const apiSecretKey = '+asJdQQpLgEPfGVRZ7AKJBHo7HYJkvYalD3yM8Ynp48=';
+    final apiSecretKey = const String.fromEnvironment('API_SECRET_KEY');
     return {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer $apiSecretKey',

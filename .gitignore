@@ -57,3 +57,7 @@ service-account.json
 # Local development
 *.local
 .vercel
+
+# Environment files
+.env.*
+!.env.example
